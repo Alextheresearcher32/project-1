@@ -14,6 +14,9 @@ from __future__ import annotations
 from typing import Literal
 
 import pandas as pd
+from camel.agents import ChatAgent
+from camel.messages import BaseMessage
+from camel.types import RoleType
 from pydantic import BaseModel, Field
 
 from glitz_quant.agents.llm_router import LLMRouter
@@ -176,3 +179,41 @@ def summarize_candles(df: pd.DataFrame, n: int = 50) -> str:
         f"Last 5 volumes: {tail['volume'].tail(5).round(2).tolist()}",
     ]
     return "\n".join(lines)
+
+
+class CamelDebate:
+    """Uses camel-ai to run a multi-agent debate on a proposed trade."""
+    
+    def __init__(self, llm: LLMRouter) -> None:
+        self.llm = llm
+        
+    async def run_debate(self, symbol: str, signal: QuantSignal) -> str:
+        """Run a debate between a bull and a bear on the proposed signal."""
+        # Note: This is a high-level integration. 
+        # In a real implementation, we'd use camel's ChatAgent directly.
+        sys_msg_bull = BaseMessage.make_assistant_message(
+            role_name="Bullish Analyst",
+            content=f"Argue why {symbol} is a good buy based on: {signal.rationale}"
+        )
+        sys_msg_bear = BaseMessage.make_assistant_message(
+            role_name="Bearish Analyst",
+            content=f"Argue why {symbol} might be a trap or a poor trade right now."
+        )
+        
+        # Simulating debate steps via LLM router for now
+        log.info("starting_camel_debate", symbol=symbol)
+        
+        debate_transcript = []
+        # Round 1: Bull
+        bull_view = await self.llm.complete(
+            agent_name="bull", system=sys_msg_bull.content, user="Start the debate."
+        )
+        debate_transcript.append(f"BULL: {bull_view}")
+        
+        # Round 2: Bear
+        bear_view = await self.llm.complete(
+            agent_name="bear", system=sys_msg_bear.content, user=f"Counter this argument: {bull_view}"
+        )
+        debate_transcript.append(f"BEAR: {bear_view}")
+        
+        return "\n\n".join(debate_transcript)

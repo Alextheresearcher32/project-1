@@ -27,6 +27,7 @@ VENUE_TO_CCXT_ID = {
     Venue.BINANCE_US: "binanceus",
     Venue.BINANCE: "binance",
     Venue.GEMINI: "gemini",
+    Venue.HYPERLIQUID: "hyperliquid",
 }
 
 
@@ -35,7 +36,7 @@ def _build_client(venue: Venue) -> Any:
     ccxt_id = VENUE_TO_CCXT_ID[venue]
     klass = getattr(ccxt, ccxt_id)
 
-    creds: dict[str, str] = {}
+    creds: dict[str, Any] = {}
     if venue == Venue.COINBASE and s.coinbase_api_key and s.coinbase_api_secret:
         creds = {
             "apiKey": s.coinbase_api_key.get_secret_value(),
@@ -55,6 +56,12 @@ def _build_client(venue: Venue) -> Any:
         creds = {
             "apiKey": s.gemini_api_key.get_secret_value(),
             "secret": s.gemini_api_secret.get_secret_value(),
+        }
+    elif venue == Venue.HYPERLIQUID and s.hyperliquid_api_private_key:
+        # Hyperliquid uses private keys directly in CCXT
+        creds = {
+            "secret": s.hyperliquid_api_private_key.get_secret_value(),
+            "address": s.hyperliquid_account_address,
         }
 
     return klass({**creds, "enableRateLimit": True})

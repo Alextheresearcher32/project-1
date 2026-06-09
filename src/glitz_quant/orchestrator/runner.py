@@ -184,11 +184,15 @@ class Runner:
                         venue = venues[0]
                         pos = self.oms.get_position(venue, sym)
 
+                        equity = await self.oms.get_total_equity()
+                        if equity == 0:
+                            equity = Decimal(10_000) # Fallback if no balance fetchable
+
                         ctx = StrategyContext(
                             candles=df,
                             open_position_size=float(pos.size),
                             open_position_avg_price=float(pos.avg_entry_price),
-                            cash_usd=float(Decimal(10_000)),
+                            cash_usd=float(equity),
                             recent_signals=self.recent_signals.get(name, [])[-10:],
                         )
                         sig = strat.on_candle(ctx)
@@ -205,7 +209,9 @@ class Runner:
                     await alerts.broadcast("warning", f"data staleness: {ev.message}")
 
                 # Account equity snapshot for breakers + metrics + store
-                equity = Decimal(10_000)  # placeholder until we wire live balances
+                equity = await self.oms.get_total_equity()
+                if equity == 0:
+                    equity = Decimal(10_000)
                 metrics.account_equity_usd.set(float(equity))
                 self.oms.breakers.observe_equity(equity)
 

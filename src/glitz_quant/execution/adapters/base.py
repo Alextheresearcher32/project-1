@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from decimal import Decimal
 from glitz_quant.data.types import Fill, Order, Venue
 
 
@@ -45,4 +46,9 @@ class ExchangeAdapter(ABC):
     @abstractmethod
     async def poll_fills(self, order: Order) -> list[Fill]:
         """Return any fills for this order since last poll."""
+        ...
+
+    @abstractmethod
+    async def fetch_total_balance(self) -> Decimal:
+        """Fetch total account equity in USD from this venue."""
         ...

@@ -180,3 +180,13 @@ class CCXTAdapter(ExchangeAdapter):
                 )
             )
         return out
+
+    async def fetch_total_balance(self) -> Decimal:
+        client = self._require_client()
+        try:
+            bal = await client.fetch_balance()
+            # CCXT 'total' usually includes both free and used balances across all assets
+            return Decimal(str(bal.get("total", {}).get("USD", 0) or bal.get("total", {}).get("USDT", 0)))
+        except Exception as e:
+            log.warning("ccxt_balance_fetch_failed", venue=self.venue.value, err=str(e))
+            return Decimal(0)

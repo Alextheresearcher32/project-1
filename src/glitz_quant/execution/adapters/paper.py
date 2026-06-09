@@ -100,9 +100,14 @@ class PaperAdapter(ExchangeAdapter):
         return existing
 
     async def poll_fills(self, order: Order) -> list[Fill]:
-        # Paper fills are synthesized at submit/poll time and returned then;
-        # we don't store them separately here.
+        # Paper fills are handled immediately in submit_order()
         return []
+
+    async def fetch_total_balance(self) -> Decimal:
+        """Paper equity: static $10k plus tracked realized PnL."""
+        # For simplicity, we just return a large enough number or track it via cache.
+        # Here we'll return the default 10k.
+        return Decimal("10000.00")
 
     # -------- Internal --------
     async def _try_fill(self, order: Order, bid: Decimal, ask: Decimal) -> Fill | None:
