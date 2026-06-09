@@ -1,0 +1,88 @@
+[workspace]
+resolver = "2"
+members = [
+    "rust/core",
+    "rust/feed",
+    "rust/book",
+    "rust/exec",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "Proprietary"
+authors = ["Glitz Gang"]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.42", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rmp-serde = "1.3"
+bincode = "1.3"
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+hyper = { version = "1.5", features = ["full"] }
+hyper-rustls = "0.27"
+
+# Logging + tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Errors
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Numerics
+rust_decimal = { version = "1.36", features = ["serde", "macros"] }
+ordered-float = { version = "4.5", features = ["serde"] }
+
+# Concurrency
+parking_lot = "0.12"
+dashmap = "6.1"
+crossbeam = "0.8"
+flume = "0.11"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+time = { version = "0.3", features = ["serde", "formatting"] }
+
+# Storage
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "chrono", "rust_decimal"] }
+
+# Crypto
+sha2 = "0.10"
+hmac = "0.12"
+ed25519-dalek = "2.1"
+secp256k1 = { version = "0.30", features = ["recovery", "global-context"] }
+
+# Config
+config = "0.14"
+toml = "0.8"
+
+# Python interop (for the few cases we expose Rust to Python)
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py312"] }
+
+# Common test deps
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

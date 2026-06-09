@@ -1,0 +1,41 @@
+# ============================================================
+# strategies.yaml — strategy registry and per-strategy config.
+# ============================================================
+# Strategies must be registered here to be loaded by the
+# orchestrator. Unknown strategies are silently ignored.
+# ============================================================
+
+strategies:
+  # Larissa's existing range-bound momentum strategy on BTC.
+  # Implemented in src/glitz_quant/strategies/bitcoin_range.py
+  bitcoin_range:
+    enabled: false                     # flip on in Phase 4 after backtest passes
+    module: glitz_quant.strategies.bitcoin_range
+    class: BitcoinRangeMomentum
+    venues: [coinbase, kraken, paper]
+    symbols: [BTC-USD]
+    timeframe: 15m
+    params:
+      support_lookback_bars: 96         # 24h on 15m
+      resistance_lookback_bars: 96
+      breakout_confirmation_bars: 3
+      momentum_indicator: rsi
+      rsi_period: 14
+      rsi_oversold: 30
+      rsi_overbought: 70
+      stop_loss_pct: 1.5
+      take_profit_pct: 3.0
+      max_concurrent_positions: 1
+
+  # Placeholder for a future LLM-signal-augmented strategy.
+  llm_macro_overlay:
+    enabled: false
+    module: glitz_quant.strategies.llm_macro_overlay
+    class: LLMMacroOverlay
+    venues: [paper]
+    symbols: [BTC-USD, ETH-USD, SOL-USD]
+    timeframe: 1h
+    params:
+      llm_call_interval_minutes: 60
+      min_confidence_threshold: 0.65
+      signal_decay_hours: 4

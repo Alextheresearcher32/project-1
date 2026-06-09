@@ -1,0 +1,116 @@
+# ============================================================
+# exchanges.yaml — venue metadata and routing rules.
+# Secrets live in .env, never here.
+# ============================================================
+
+venues:
+  coinbase:
+    enabled: true
+    type: cex
+    region: us
+    ccxt_id: coinbaseadvanced
+    fee_bps_maker: 40
+    fee_bps_taker: 60
+    rate_limits:
+      orders_per_second: 5
+      requests_per_second: 10
+    ws_url: wss://advanced-trade-ws.coinbase.com
+    rest_url: https://api.coinbase.com
+
+  kraken:
+    enabled: true
+    type: cex
+    region: us
+    ccxt_id: kraken
+    fee_bps_maker: 16
+    fee_bps_taker: 26
+    rate_limits:
+      orders_per_second: 1
+      requests_per_second: 1
+    ws_url: wss://ws.kraken.com/v2
+    rest_url: https://api.kraken.com
+
+  binance_us:
+    enabled: true
+    type: cex
+    region: us
+    ccxt_id: binanceus
+    fee_bps_maker: 10
+    fee_bps_taker: 10
+    rate_limits:
+      orders_per_second: 10
+      requests_per_second: 20
+    ws_url: wss://stream.binance.us:9443
+    rest_url: https://api.binance.us
+
+  gemini:
+    enabled: false
+    type: cex
+    region: us
+    ccxt_id: gemini
+    fee_bps_maker: 20
+    fee_bps_taker: 40
+    rate_limits:
+      orders_per_second: 5
+      requests_per_second: 10
+
+  hyperliquid:
+    enabled: false                     # flip on in Phase 2
+    type: dex_perps
+    region: global
+    custom_sdk: hyperliquid-python-sdk
+    fee_bps_maker: 1
+    fee_bps_taker: 3.5
+    ws_url: wss://api.hyperliquid.xyz/ws
+    rest_url: https://api.hyperliquid.xyz
+
+  jupiter:
+    enabled: false
+    type: dex_aggregator
+    chain: solana
+    api_url: https://quote-api.jup.ag/v6
+
+  paper:
+    enabled: true
+    type: simulator
+    fee_bps_maker: 5
+    fee_bps_taker: 15
+    fill_model: aggressive_limit       # 'optimistic' | 'aggressive_limit' | 'next_bar'
+    slippage_bps: 5
+
+# -------- Symbol universe + per-venue mapping --------
+# Internal canonical names → venue-specific symbols.
+# Strategies reference the canonical name only.
+symbols:
+  BTC-USD:
+    base: BTC
+    quote: USD
+    venues:
+      coinbase: BTC-USD
+      kraken: XBT/USD
+      binance_us: BTCUSD
+      paper: BTC-USD
+    tick_size_default: 0.01
+    lot_size_default: 0.00001
+
+  ETH-USD:
+    base: ETH
+    quote: USD
+    venues:
+      coinbase: ETH-USD
+      kraken: ETH/USD
+      binance_us: ETHUSD
+      paper: ETH-USD
+    tick_size_default: 0.01
+    lot_size_default: 0.0001
+
+  SOL-USD:
+    base: SOL
+    quote: USD
+    venues:
+      coinbase: SOL-USD
+      kraken: SOL/USD
+      binance_us: SOLUSD
+      paper: SOL-USD
+    tick_size_default: 0.01
+    lot_size_default: 0.001
