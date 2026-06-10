@@ -1,0 +1,42 @@
+[Unit]
+Description=glitz-quant orchestrator
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Edit these to match your deployment:
+User=glitz
+Group=glitz
+WorkingDirectory=/opt/glitz-quant
+EnvironmentFile=/opt/glitz-quant/.env
+
+# Use the absolute path to uv that `which uv` reports on your server.
+ExecStart=/home/glitz/.local/bin/uv run glitz
+
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+# Stop signal: SIGTERM gives the orchestrator time to flatten/cancel.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/glitz-quant /var/run/glitz-quant /var/log/glitz-quant
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+
+StandardOutput=append:/var/log/glitz-quant/orchestrator.log
+StandardError=append:/var/log/glitz-quant/orchestrator.err.log
+
+[Install]
+WantedBy=multi-user.target

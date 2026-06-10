@@ -1,0 +1,131 @@
+# ============================================================
+# risk.yaml — hard limits enforced by the risk engine.
+# ============================================================
+# Every order passes through this. If a strategy says "buy 100 BTC"
+# and risk says "no", the order does not exist.
+#
+# Numbers below are CONSERVATIVE DEFAULTS for paper/early live.
+# Tighten further before increasing capital. Loosen only after
+# documented evidence (backtest + paper).
+# ============================================================
+
+# Global kill — overrides everything if false
+live_trading_enabled: false
+
+# Phrase that must match LIVE_TRADING_CONFIRM_PHRASE in .env to enable live mode.
+# Generate fresh with: openssl rand -hex 16
+live_trading_confirm_phrase: "REPLACE_ME_WITH_OPENSSL_RAND_HEX"
+
+# -------- Account-level limits --------
+account:
+  max_total_notional_usd: 1000        # cap on combined open exposure
+  max_leverage: 1.0                   # 1.0 = no leverage. Stay here until proven.
+  max_daily_loss_usd: 100             # hard stop. Hit it, system halts.
+  max_drawdown_pct: 5.0               # rolling 30-day, equity peak-to-trough
+  reserve_cash_pct: 25                # min stable balance, never deployed
+
+# -------- Per-order limits --------
+order:
+  max_notional_usd: 100               # single order ceiling
+  max_size_pct_of_book: 0.5           # don't be more than 0.5% of visible liquidity
+  min_size_usd: 5                     # avoid dust
+  allowed_types:                      # explicit whitelist
+    - limit
+    - limit_maker
+    - stop_limit
+  forbid_market_orders: true          # market orders forbidden by default
+  max_price_deviation_pct: 1.0        # reject if price > 1% from mid
+
+# -------- Per-symbol limits --------
+symbol_limits:
+  default:
+    max_position_notional_usd: 250
+    max_orders_per_minute: 10
+  BTC-USD:
+    max_position_notional_usd: 500
+    max_orders_per_minute: 15
+  ETH-USD:
+    max_position_notional_usd: 300
+    max_orders_per_minute: 15
+  SOL-USD:
+    max_position_notional_usd: 200
+    max_orders_per_minute: 10
+
+# -------- Circuit breakers --------
+# When any of these trip, the orchestrator halts new orders and alerts.
+# Resuming requires manual intervention (intentional friction).
+circuit_breakers:
+  daily_loss:
+    enabled: true
+    threshold_usd: 100
+    action: halt_and_alert
+
+  consecutive_losses:
+    enabled: true
+    count: 5
+    action: pause_60min
+
+  rapid_drawdown:
+    enabled: true
+    threshold_pct: 2.0
+    window_minutes: 15
+    action: halt_and_alert
+
+  data_staleness:
+    enabled: true
+    max_age_seconds: 30                # if a venue's feed is older than this
+    action: disable_venue
+
+  order_rejection_rate:
+    enabled: true
+    threshold_pct: 20                  # if >20% of orders rejected in window
+    window_minutes: 5
+    action: pause_30min
+
+  llm_disagreement:
+    enabled: true
+    description: "If multiple LLM agents disagree sharply on direction, skip the trade."
+    min_agreement_pct: 60
+    action: skip_signal
+
+# -------- DEX / hot wallet caps --------
+# Treasury sits on hardware wallet. Hot wallet on server is capped.
+# Excess automatically sweeps back to treasury.
+hot_wallets:
+  solana:
+    max_balance_usd: 500
+    sweep_threshold_usd: 750           # if balance exceeds this, sweep down to max
+    sweep_destination_env: SOLANA_TREASURY_PUBKEY
+  evm:
+    max_balance_usd: 500
+    sweep_threshold_usd: 750
+    sweep_destination_env: EVM_TREASURY_ADDRESS
+
+# -------- LLM safety --------
+# LLMs propose signals. They do NOT size positions or send orders directly.
+llm:
+  max_signal_confidence_used: 0.8      # cap on how much we weight LLM confidence
+  required_human_review_above_usd: 250 # signals proposing >$250 trades pause for review (paper auto-approve)
+  max_calls_per_minute: 30
+  max_cost_per_day_usd: 50
+
+# -------- Venue-specific overrides --------
+venues:
+  binance_us:
+    enabled: true
+    max_position_notional_usd: 500
+  kraken:
+    enabled: true
+    max_position_notional_usd: 500
+  coinbase:
+    enabled: true
+    max_position_notional_usd: 500
+  hyperliquid:
+    enabled: false                     # off until DEX execution layer is built
+    max_position_notional_usd: 100
+  jupiter:
+    enabled: false                     # off until DEX execution layer is built
+    max_position_notional_usd: 100
+  paper:
+    enabled: true
+    max_position_notional_usd: 100000  # paper can dream

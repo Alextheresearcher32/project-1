@@ -1,0 +1,84 @@
+# Secrets — NEVER commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.keystore
+secrets/
+credentials/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.venv/
+venv/
+env/
+.python-version
+.uv/
+uv.lock
+
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+
+# Data — large files, regeneratable
+data/raw/*
+data/processed/*
+data/backtests/*
+data/models/*.pt
+data/models/*.bin
+data/models/*.safetensors
+!data/**/.gitkeep
+*.parquet
+*.feather
+
+# Logs + runtime
+logs/
+*.log
+*.pid
+/var/run/glitz-quant/
+
+# Notebooks — keep clean, no outputs
+*.ipynb_checkpoints/
+.ipynb_checkpoints
+notebooks/*.html
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+*.iml
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Docker
+.docker/

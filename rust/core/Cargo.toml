@@ -1,0 +1,22 @@
+[package]
+name = "glitz-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "glitz_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+rust_decimal.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+ordered-float.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

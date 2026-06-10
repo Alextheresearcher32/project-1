@@ -1,0 +1,28 @@
+[Unit]
+Description=glitz-quant API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=glitz
+Group=glitz
+WorkingDirectory=/opt/glitz-quant
+EnvironmentFile=/opt/glitz-quant/.env
+
+ExecStart=/home/glitz/.local/bin/uv run uvicorn glitz_quant.api.main:app --host 0.0.0.0 --port 8000 --workers 1
+
+Restart=on-failure
+RestartSec=10
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/glitz-quant /var/log/glitz-quant
+
+StandardOutput=append:/var/log/glitz-quant/api.log
+StandardError=append:/var/log/glitz-quant/api.err.log
+
+[Install]
+WantedBy=multi-user.target

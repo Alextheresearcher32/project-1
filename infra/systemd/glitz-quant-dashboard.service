@@ -1,0 +1,27 @@
+[Unit]
+Description=glitz-quant dashboard (Streamlit)
+After=network-online.target
+
+[Service]
+Type=simple
+User=glitz
+Group=glitz
+WorkingDirectory=/opt/glitz-quant
+EnvironmentFile=/opt/glitz-quant/.env
+
+ExecStart=/home/glitz/.local/bin/uv run streamlit run src/glitz_quant/dashboard/streamlit_app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true
+
+Restart=on-failure
+RestartSec=10
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/glitz-quant /var/log/glitz-quant
+
+StandardOutput=append:/var/log/glitz-quant/dashboard.log
+StandardError=append:/var/log/glitz-quant/dashboard.err.log
+
+[Install]
+WantedBy=multi-user.target
