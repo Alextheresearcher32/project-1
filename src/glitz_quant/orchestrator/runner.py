@@ -21,6 +21,8 @@ import typer
 
 import ccxt.async_support as ccxt  # type: ignore[import-untyped]
 
+from glitz_quant.agents.signal_analyst import SignalAnalyst
+from glitz_quant.agents.llm_router import LLMRouter
 from glitz_quant.data.ingest.ccxt_connector import CCXTIngest
 from glitz_quant.data.store.redis_cache import RedisCache
 from glitz_quant.data.store.supabase_store import SupabaseStore
@@ -145,6 +147,7 @@ class Runner:
         self.strategies: dict[str, Strategy] = {}
         self.recent_signals: dict[str, list] = {}
         self._last_breaker_status: dict[str, str] = {}
+        self._last_signal_analysis_ts: float = 0.0
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
@@ -249,6 +252,20 @@ class Runner:
                     if name not in current_status:
                         metrics.circuit_breaker_active.labels(name=name).set(0)
                 self._last_breaker_status = current_status
+
+                # Signal analyst slow loop — runs every 4 hours if store is available
+                import time as _time
+                analyst_interval = int(get_app_config().get("orchestrator", {}).get("signal_analyst_interval_seconds", 14400))
+                if self.store is not None and (_time.time() - self._last_signal_analysis_ts) >= analyst_interval:
+                    try:
+                        llm = LLMRouter(store=self.store)
+                        analyst = SignalAnalyst(llm=llm, store=self.store)
+                        report = await analyst.run(lookback_days=30)
+                        if report is not None:
+                            await alerts.broadcast("info", analyst.format_broadcast(report))
+                        self._last_signal_analysis_ts = _time.time()
+                    except Exception as e:
+                        log.warning("signal_analyst_failed", err=str(e))
 
                 await asyncio.sleep(int(get_app_config().get("orchestrator", {}).get("tick_interval_seconds", 30)))
         finally:

@@ -245,6 +245,38 @@ class SupabaseStore:
                 mode, total, cash, positions, realized_24h,
             )
 
+    # -------- Signal history (for SignalAnalyst) --------
+    async def fetch_signal_history(self, days: int = 30) -> list[dict[str, Any]]:
+        """
+        Returns signals joined with their resulting orders for the past N days.
+        Each row represents one signal; order fields are null if no order was placed.
+        """
+        async with self._require_pool().acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    s.strategy,
+                    s.symbol,
+                    s.direction,
+                    s.confidence,
+                    s.confidence_label,
+                    s.reason,
+                    s.metadata,
+                    s.ts          AS signal_ts,
+                    o.status      AS order_status,
+                    o.side        AS order_side,
+                    o.filled_size,
+                    o.avg_fill_price,
+                    o.fees_paid
+                FROM signals s
+                LEFT JOIN orders o ON o.parent_signal_id = s.id
+                WHERE s.ts >= NOW() - ($1 || ' days')::interval
+                ORDER BY s.ts ASC
+                """,
+                str(days),
+            )
+        return [dict(r) for r in rows]
+
     # -------- Agent runs --------
     async def log_agent_run(
         self,
