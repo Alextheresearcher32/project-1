@@ -1,15 +1,14 @@
 """
-SignalAnalyst — reads historical signal + order data and uses an LLM
-(via litellm → OpenRouter) to identify what's working, what isn't, and why.
+SignalAnalyst — two-model pipeline via litellm → OpenRouter.
+
+Step 1 (DeepSeek): reads raw signal + trade data, extracts statistical
+  patterns — win rate, confidence calibration, indicator correlations.
+
+Step 2 (MiniMax M3): receives DeepSeek's pattern extraction and
+  synthesizes it into a final structured report with recommendations.
 
 Runs on a slow loop (every few hours). Output is broadcast via
 Telegram/Discord and persisted in agent_runs.
-
-Analysis covers:
-- Win rate and average PnL per strategy
-- Whether confidence scores are calibrated (high conf = more wins?)
-- What indicator conditions (RSI, volume_z from signal metadata) predict wins
-- Recommendations for parameter tuning
 """
 
 from __future__ import annotations
@@ -25,8 +24,9 @@ from glitz_quant.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-# litellm model string — routes through OpenRouter, swap model here without code changes
-ANALYSIS_MODEL = "openrouter/anthropic/claude-opus-4-7"
+# litellm model strings via OpenRouter
+DEEPSEEK_MODEL = "openrouter/deepseek/deepseek-chat"       # Step 1: pattern extraction
+MINIMAX_MODEL = "openrouter/minimax/minimax-m3"             # Step 2: synthesis + recommendations
 
 
 class SignalAnalysisReport(BaseModel):
@@ -146,9 +146,10 @@ def _format_for_llm(trips: list[dict[str, Any]], raw_signals: list[dict[str, Any
 
 class SignalAnalyst:
     """
-    Slow-loop agent. Reads signal + order history from Supabase, calls
-    an LLM via litellm (OpenRouter) to analyze patterns, and returns a
-    structured report suitable for broadcasting.
+    Two-step slow-loop agent:
+      1. DeepSeek reads the raw data and extracts statistical patterns.
+      2. MiniMax M3 receives DeepSeek's findings and synthesizes the
+         final structured report with concrete recommendations.
     """
     name = "signal_analyst"
 
@@ -165,28 +166,46 @@ class SignalAnalyst:
         trips = _pair_round_trips(rows)
         summary = _format_for_llm(trips, rows)
 
-        system = (
-            "You are a quantitative analyst reviewing the live trading history of a "
-            "crypto algorithmic trading system. You receive a compact summary of signals "
-            "and their trade outcomes. Be concrete and data-driven. Do not invent numbers "
-            "not present in the data. If sample size is under 10 trades, say so and focus "
-            "on metadata quality and confidence distribution instead."
+        # ── Step 1: DeepSeek extracts patterns from raw data ──────────────
+        deepseek_system = (
+            "You are a quantitative data analyst. You receive a compact summary of "
+            "algorithmic trading signals and their outcomes. Extract statistical patterns "
+            "only — do not invent numbers. Focus on: win rate per strategy, whether "
+            "confidence scores predict wins, which indicator values (RSI, volume_z, ATR) "
+            "appear in wins vs losses, and any anomalies in the data. Be terse and precise."
         )
-        user = (
-            f"Signal and trade history for the past {lookback_days} days:\n\n"
-            f"{summary}\n\n"
-            "Analyze: win rate and PnL per strategy, confidence calibration "
-            "(do higher-confidence signals win more?), which indicator values in entry_metadata "
-            "(RSI, volume_z, atr, etc.) correlate with wins vs losses, and give up to 4 "
-            "actionable recommendations for improving signal quality."
+        deepseek_user = (
+            f"Signal and trade data — last {lookback_days} days:\n\n{summary}\n\n"
+            "List your statistical findings as bullet points. No recommendations yet."
         )
+        patterns, _ = await self.llm.complete(
+            agent_name=f"{self.name}:deepseek",
+            system=deepseek_system,
+            user=deepseek_user,
+            model=DEEPSEEK_MODEL,
+            temperature=0.1,
+            max_tokens=1000,
+        )
+        log.info("signal_analyst_deepseek_done", chars=len(patterns))
 
+        # ── Step 2: MiniMax M3 synthesizes into a structured report ───────
+        minimax_system = (
+            "You are a senior trading strategist. You receive statistical findings "
+            "extracted from a live crypto trading system's signal history. "
+            "Synthesize these findings into a structured report with concrete, "
+            "actionable recommendations. Be direct. Do not re-derive statistics — "
+            "trust the findings provided."
+        )
+        minimax_user = (
+            f"Statistical findings from signal history analysis:\n\n{patterns}\n\n"
+            "Produce the final structured report."
+        )
         report: SignalAnalysisReport = await self.llm.complete_structured(
-            agent_name=self.name,
-            system=system,
-            user=user,
+            agent_name=f"{self.name}:minimax",
+            system=minimax_system,
+            user=minimax_user,
             schema=SignalAnalysisReport,
-            model=ANALYSIS_MODEL,
+            model=MINIMAX_MODEL,
             temperature=0.1,
             max_tokens=1500,
         )
