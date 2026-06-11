@@ -157,6 +157,33 @@ class Runner:
             except NotImplementedError:
                 pass
 
+    async def _log_connection_status(self) -> None:
+        s = get_settings()
+        connected = []
+        missing = []
+
+        checks = {
+            "Anthropic": s.anthropic_api_key,
+            "OpenRouter": s.openrouter_api_key,
+            "Supabase URL": s.supabase_url,
+            "Supabase DB": s.supabase_db_url,
+            "Coinbase": s.coinbase_api_key,
+            "Kraken": s.kraken_api_key,
+            "Binance.US": s.binance_us_api_key,
+            "Telegram": s.telegram_bot_token,
+            "Discord": s.discord_webhook_url,
+        }
+        for name, val in checks.items():
+            (connected if val else missing).append(name)
+
+        log.info("api_key_status", connected=connected, missing=missing)
+        await alerts.broadcast(
+            "info",
+            f"glitz-quant starting\n"
+            f"Connected: {', '.join(connected) or 'none'}\n"
+            f"Missing: {', '.join(missing) or 'none'}",
+        )
+
     async def run(self) -> None:
         s = get_settings()
         log.info("orchestrator_starting", env=s.glitz_env.value, mode=s.glitz_mode.value)
@@ -170,6 +197,7 @@ class Runner:
             log.warning("metrics_server_failed", err=str(e))
 
         self._install_signal_handlers()
+        await self._log_connection_status()
         self.cache, self.store, self.ingests, self.oms = await _bootstrap()
         self.strategies = _load_strategies()
 

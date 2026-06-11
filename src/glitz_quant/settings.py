@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     """Reads from .env and process env vars."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(ROOT_DIR / ".env"),   # absolute so it works from any CWD
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",

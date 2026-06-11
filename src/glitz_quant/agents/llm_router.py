@@ -33,7 +33,27 @@ DEFAULT_MODELS = {
 
 
 def _configure_litellm() -> None:
+    """Push secrets from Settings into both litellm attrs and os.environ.
+
+    litellm reads some providers from its own attrs, others directly from
+    os.environ. Setting both guarantees coverage regardless of litellm version.
+    """
+    import os
     s = get_settings()
+
+    _env_map = {
+        "ANTHROPIC_API_KEY": s.anthropic_api_key,
+        "OPENAI_API_KEY": s.openai_api_key,
+        "GOOGLE_API_KEY": s.google_api_key,
+        "GROQ_API_KEY": s.groq_api_key,
+        "XAI_API_KEY": s.xai_api_key,
+        "OPENROUTER_API_KEY": s.openrouter_api_key,
+    }
+    for var, secret in _env_map.items():
+        if secret:
+            os.environ.setdefault(var, secret.get_secret_value())
+
+    # litellm provider-specific attrs (legacy path — keep both)
     if s.anthropic_api_key:
         litellm.anthropic_key = s.anthropic_api_key.get_secret_value()
     if s.openai_api_key:
