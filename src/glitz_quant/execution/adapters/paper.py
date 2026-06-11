@@ -34,7 +34,7 @@ log = get_logger(__name__)
 class PaperAdapter(ExchangeAdapter):
     venue = Venue.PAPER
 
-    def __init__(self, cache: RedisCache) -> None:
+    def __init__(self, cache: RedisCache, starting_cash_usd: float = 10_000.0) -> None:
         self.cache = cache
         cfg = get_exchanges_config().get("venues", {}).get("paper", {})
         self._fee_bps_taker = Decimal(str(cfg.get("fee_bps_taker", 15)))
@@ -42,6 +42,8 @@ class PaperAdapter(ExchangeAdapter):
         self._slippage_bps = Decimal(str(cfg.get("slippage_bps", 5)))
         self._open: dict[str, Order] = {}     # client_order_id -> Order
         self._reference_venue: Venue = Venue.COINBASE  # source for prices
+        self._starting_cash = Decimal(str(starting_cash_usd))
+        self._cumulative_pnl = Decimal(0)
 
     async def start(self) -> None:
         log.info("paper_adapter_started")
@@ -103,11 +105,11 @@ class PaperAdapter(ExchangeAdapter):
         # Paper fills are handled immediately in submit_order()
         return []
 
+    def record_pnl(self, realized_usd: Decimal) -> None:
+        self._cumulative_pnl += realized_usd
+
     async def fetch_total_balance(self) -> Decimal:
-        """Paper equity: static $10k plus tracked realized PnL."""
-        # For simplicity, we just return a large enough number or track it via cache.
-        # Here we'll return the default 10k.
-        return Decimal("10000.00")
+        return self._starting_cash + self._cumulative_pnl
 
     # -------- Internal --------
     async def _try_fill(self, order: Order, bid: Decimal, ask: Decimal) -> Fill | None:

@@ -19,6 +19,8 @@ from typing import Any
 import pandas as pd
 import typer
 
+import ccxt.async_support as ccxt  # type: ignore[import-untyped]
+
 from glitz_quant.data.ingest.ccxt_connector import CCXTIngest
 from glitz_quant.data.store.redis_cache import RedisCache
 from glitz_quant.data.store.supabase_store import SupabaseStore
@@ -116,6 +118,23 @@ async def _fetch_candles_df(
     return df.set_index("ts")
 
 
+async def _fetch_funding_rate(symbol: str = "BTC/USDT") -> float | None:
+    """Fetch perpetuals funding rate from Binance (public, no auth)."""
+    try:
+        exchange = ccxt.binance()
+        data = await exchange.fetch_funding_rate(symbol)
+        await exchange.close()
+        rate = data.get("fundingRate")
+        return float(rate) if rate is not None else None
+    except Exception as e:
+        log.warning("funding_rate_fetch_failed", symbol=symbol, err=str(e))
+        try:
+            await exchange.close()
+        except Exception:
+            pass
+        return None
+
+
 class Runner:
     def __init__(self) -> None:
         self._stop = asyncio.Event()
@@ -125,6 +144,7 @@ class Runner:
         self.oms: Any = None
         self.strategies: dict[str, Strategy] = {}
         self.recent_signals: dict[str, list] = {}
+        self._last_breaker_status: dict[str, str] = {}
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
@@ -171,6 +191,8 @@ class Runner:
                         continue
                     ingest = self.ingests[venues[0]]
 
+                    funding_rate = await _fetch_funding_rate()
+
                     for sym in symbols:
                         df = await _fetch_candles_df(ingest, sym, tf, limit=500)
                         if df.empty:
@@ -185,8 +207,10 @@ class Runner:
                         pos = self.oms.get_position(venue, sym)
 
                         equity = await self.oms.get_total_equity()
-                        if equity == 0:
-                            equity = Decimal(10_000) # Fallback if no balance fetchable
+
+                        extra: dict[str, Any] = {}
+                        if funding_rate is not None:
+                            extra["funding_rate_8h"] = funding_rate
 
                         ctx = StrategyContext(
                             candles=df,
@@ -194,6 +218,7 @@ class Runner:
                             open_position_avg_price=float(pos.avg_entry_price),
                             cash_usd=float(equity),
                             recent_signals=self.recent_signals.get(name, [])[-10:],
+                            extra_data=extra,
                         )
                         sig = strat.on_candle(ctx)
                         if sig is not None:
@@ -210,10 +235,20 @@ class Runner:
 
                 # Account equity snapshot for breakers + metrics + store
                 equity = await self.oms.get_total_equity()
-                if equity == 0:
-                    equity = Decimal(10_000)
                 metrics.account_equity_usd.set(float(equity))
+                metrics.account_pnl_daily_usd.set(float(self.oms.daily_pnl_usd))
                 self.oms.breakers.observe_equity(equity)
+
+                # Alert on newly-tripped circuit breakers
+                current_status = self.oms.breakers.status()
+                for name, msg in current_status.items():
+                    if name not in self._last_breaker_status:
+                        await alerts.broadcast("critical", f"CIRCUIT BREAKER TRIPPED [{name}]: {msg}")
+                        metrics.circuit_breaker_active.labels(name=name).set(1)
+                for name in list(self._last_breaker_status):
+                    if name not in current_status:
+                        metrics.circuit_breaker_active.labels(name=name).set(0)
+                self._last_breaker_status = current_status
 
                 await asyncio.sleep(int(get_app_config().get("orchestrator", {}).get("tick_interval_seconds", 30)))
         finally:

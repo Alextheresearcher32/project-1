@@ -27,6 +27,20 @@ strategies:
       take_profit_pct: 3.0
       max_concurrent_positions: 1
 
+  # Funding rate carry: go long spot when shorts are overextended (funding very negative).
+  funding_rate_carry:
+    enabled: false                     # enable after paper-testing alongside bitcoin_range
+    module: glitz_quant.strategies.funding_rate
+    class: FundingRateCarry
+    venues: [coinbase, paper]
+    symbols: [BTC-USD]
+    timeframe: 15m
+    params:
+      entry_threshold: 0.0003          # -0.03%/8h → shorts overextended
+      exit_threshold: 0.0005           # +0.05%/8h → longs overextended
+      target_notional_usd: 50
+      symbol: BTC-USD
+
   # Placeholder for a future LLM-signal-augmented strategy.
   llm_macro_overlay:
     enabled: false

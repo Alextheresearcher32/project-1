@@ -1,222 +1,300 @@
 {
-    "annotations": {
-        "list": [
-            {
-                "builtIn": 1,
-                "datasource": "-- Grafana --",
-                "enable": true,
-                "hide": true,
-                "iconColor": "rgba(0, 211, 255, 1)",
-                "name": "Annotations & Alerts",
-                "type": "dashboard"
-            }
-        ]
-    },
-    "editable": true,
-    "gnetId": null,
-    "graphTooltip": 0,
-    "id": null,
-    "links": [],
-    "panels": [
-        {
-            "aliasColors": {},
-            "bars": false,
-            "dashLength": 10,
-            "dashes": false,
-            "datasource": "Prometheus",
-            "fill": 1,
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 0,
-                "y": 0
-            },
-            "id": 1,
-            "legend": {
-                "avg": false,
-                "current": false,
-                "max": false,
-                "min": false,
-                "show": true,
-                "total": false,
-                "values": false
-            },
-            "lines": true,
-            "linewidth": 1,
-            "nullPointMode": "null",
-            "percentage": false,
-            "pointradius": 5,
-            "points": false,
-            "renderer": "flot",
-            "seriesOverrides": [],
-            "spaceLength": 10,
-            "stack": false,
-            "steppedLine": false,
-            "targets": [
-                {
-                    "expr": "glitz_account_equity_usd",
-                    "format": "time_series",
-                    "intervalFactor": 2,
-                    "legendFormat": "Equity USD",
-                    "refId": "A"
-                }
-            ],
-            "thresholds": [],
-            "timeFrom": null,
-            "timeShift": null,
-            "title": "Account Equity",
-            "tooltip": {
-                "shared": true,
-                "sort": 0,
-                "value_type": "individual"
-            },
-            "type": "graph",
-            "xaxis": {
-                "buckets": null,
-                "mode": "time",
-                "name": null,
-                "show": true,
-                "values": []
-            },
-            "yaxes": [
-                {
-                    "format": "dec",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                },
-                {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                }
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 9000 },
+              { "color": "green", "value": 10000 }
             ]
+          },
+          "unit": "currencyUSD",
+          "mappings": []
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "id": 10,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background" },
+      "title": "Account Equity",
+      "type": "stat",
+      "targets": [
+        { "expr": "glitz_account_equity_usd", "legendFormat": "Equity", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": -50 },
+              { "color": "green", "value": 0 }
+            ]
+          },
+          "unit": "currencyUSD"
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "id": 11,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "title": "Daily PnL",
+      "type": "stat",
+      "targets": [
+        { "expr": "glitz_account_pnl_daily_usd", "legendFormat": "Daily PnL", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "id": 12,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "title": "Circuit Breakers Active",
+      "type": "stat",
+      "targets": [
+        { "expr": "sum(glitz_circuit_breaker_active)", "legendFormat": "Breakers", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD" }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "id": 13,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "title": "Total Position Notional",
+      "type": "stat",
+      "targets": [
+        { "expr": "sum(glitz_position_notional_usd)", "legendFormat": "Notional", "refId": "A" }
+      ]
+    },
+    {
+      "aliasColors": {},
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" } },
+      "fill": 1,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "id": 1,
+      "legend": { "show": true },
+      "lines": true,
+      "linewidth": 2,
+      "nullPointMode": "null",
+      "targets": [
+        {
+          "expr": "glitz_account_equity_usd",
+          "legendFormat": "Equity USD",
+          "refId": "A"
+        }
+      ],
+      "title": "Equity Curve",
+      "type": "graph"
+    },
+    {
+      "aliasColors": {},
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" } },
+      "fill": 1,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "id": 2,
+      "legend": { "show": true },
+      "lines": true,
+      "linewidth": 2,
+      "nullPointMode": "null",
+      "targets": [
+        {
+          "expr": "glitz_account_pnl_daily_usd",
+          "legendFormat": "Daily PnL USD",
+          "refId": "A"
+        }
+      ],
+      "title": "Daily PnL",
+      "type": "graph"
+    },
+    {
+      "aliasColors": {},
+      "datasource": "Prometheus",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 12 },
+      "id": 3,
+      "legend": { "show": true },
+      "lines": true,
+      "linewidth": 1,
+      "targets": [
+        {
+          "expr": "sum(rate(glitz_signals_emitted_total[5m])) by (strategy, direction)",
+          "legendFormat": "{{strategy}} / {{direction}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Signals Emitted (rate/5m)",
+      "type": "graph"
+    },
+    {
+      "aliasColors": {},
+      "datasource": "Prometheus",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 12 },
+      "id": 4,
+      "legend": { "show": true },
+      "lines": true,
+      "linewidth": 1,
+      "targets": [
+        {
+          "expr": "sum(rate(glitz_orders_filled_total[5m])) by (venue, symbol)",
+          "legendFormat": "{{venue}} / {{symbol}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Fill Rate (rate/5m)",
+      "type": "graph"
+    },
+    {
+      "aliasColors": {},
+      "datasource": "Prometheus",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 19 },
+      "id": 5,
+      "legend": { "show": true },
+      "lines": true,
+      "linewidth": 1,
+      "targets": [
+        {
+          "expr": "sum(rate(glitz_orders_rejected_total[5m])) by (reason)",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Order Rejections (rate/5m)",
+      "type": "graph"
+    },
+    {
+      "aliasColors": {},
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" } },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 19 },
+      "id": 6,
+      "legend": { "show": true },
+      "lines": true,
+      "linewidth": 1,
+      "targets": [
+        {
+          "expr": "glitz_position_notional_usd",
+          "legendFormat": "{{venue}} / {{symbol}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Open Position Notional by Symbol",
+      "type": "graph"
+    },
+    {
+      "aliasColors": {},
+      "datasource": "Prometheus",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 26 },
+      "id": 7,
+      "legend": { "show": true },
+      "lines": true,
+      "linewidth": 1,
+      "targets": [
+        {
+          "expr": "glitz_circuit_breaker_active",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Circuit Breaker Status (1 = tripped)",
+      "type": "graph"
+    },
+    {
+      "aliasColors": {},
+      "datasource": "Prometheus",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 26 },
+      "id": 8,
+      "legend": { "show": true },
+      "lines": true,
+      "linewidth": 1,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(glitz_order_submit_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95 order latency",
+          "refId": "A"
         },
         {
-            "aliasColors": {},
-            "bars": false,
-            "dashLength": 10,
-            "dashes": false,
-            "datasource": "Prometheus",
-            "fill": 1,
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 12,
-                "y": 0
-            },
-            "id": 2,
-            "legend": {
-                "avg": false,
-                "current": false,
-                "max": false,
-                "min": false,
-                "show": true,
-                "total": false,
-                "values": false
-            },
-            "lines": true,
-            "linewidth": 1,
-            "nullPointMode": "null",
-            "percentage": false,
-            "pointradius": 5,
-            "points": false,
-            "renderer": "flot",
-            "seriesOverrides": [],
-            "spaceLength": 10,
-            "stack": false,
-            "steppedLine": false,
-            "targets": [
-                {
-                    "expr": "sum(rate(glitz_orders_filled_total[5m])) by (venue)",
-                    "format": "time_series",
-                    "intervalFactor": 2,
-                    "legendFormat": "{{venue}}",
-                    "refId": "A"
-                }
-            ],
-            "thresholds": [],
-            "timeFrom": null,
-            "timeShift": null,
-            "title": "Fill Rate",
-            "tooltip": {
-                "shared": true,
-                "sort": 0,
-                "value_type": "individual"
-            },
-            "type": "graph",
-            "xaxis": {
-                "buckets": null,
-                "mode": "time",
-                "name": null,
-                "show": true,
-                "values": []
-            },
-            "yaxis": [
-                {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                },
-                {
-                    "format": "short",
-                    "label": null,
-                    "logBase": 1,
-                    "max": null,
-                    "min": null,
-                    "show": true
-                }
-            ]
+          "expr": "histogram_quantile(0.99, sum(rate(glitz_order_submit_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99 order latency",
+          "refId": "B"
         }
-    ],
-    "refresh": "5s",
-    "schemaVersion": 16,
-    "style": "dark",
-    "tags": [
-        "glitz"
-    ],
-    "templating": {
-        "list": []
+      ],
+      "title": "Order Submit Latency (p95 / p99)",
+      "type": "graph",
+      "yaxes": [{ "format": "s", "show": true }, { "show": false }]
     },
-    "time": {
-        "from": "now-6h",
-        "to": "now"
-    },
-    "timepicker": {
-        "refresh_intervals": [
-            "5s",
-            "10s",
-            "30s",
-            "1m",
-            "5m",
-            "15m",
-            "30m",
-            "1h",
-            "2h",
-            "1d"
-        ],
-        "time_options": [
-            "5m",
-            "15m",
-            "1h",
-            "6h",
-            "12h",
-            "24h",
-            "2d",
-            "7d",
-            "30d"
-        ]
-    },
-    "timezone": "",
-    "title": "glitz-quant Overview",
-    "uid": "glitz-overview",
-    "version": 1
+    {
+      "aliasColors": {},
+      "datasource": "Prometheus",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 33 },
+      "id": 9,
+      "legend": { "show": true },
+      "lines": true,
+      "linewidth": 1,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(glitz_llm_call_latency_seconds_bucket[5m])) by (le, agent, provider))",
+          "legendFormat": "p95 {{agent}} ({{provider}})",
+          "refId": "A"
+        }
+      ],
+      "title": "LLM Call Latency p95 by Agent",
+      "type": "graph",
+      "yaxes": [{ "format": "s", "show": true }, { "show": false }]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 27,
+  "style": "dark",
+  "tags": ["glitz"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {
+    "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m", "1h"],
+    "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d", "30d"]
+  },
+  "timezone": "",
+  "title": "glitz-quant Overview",
+  "uid": "glitz-overview",
+  "version": 2
 }

@@ -6,7 +6,7 @@ The OMS turns Signals into Orders.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pandas as pd
@@ -22,6 +22,7 @@ class StrategyContext:
     open_position_avg_price: float
     cash_usd: float
     recent_signals: list[Signal]             # last few signals from this strategy
+    extra_data: dict[str, Any] = field(default_factory=dict)  # venue-specific extras, e.g. funding_rate_8h
 
 
 class Strategy(ABC):

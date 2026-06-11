@@ -264,6 +264,9 @@ class OMS:
             pos.realized_pnl += realized
             self.daily_pnl_usd += realized
             self.breakers.observe_realized_pnl(realized)
+            adapter = self.adapters.get(order.venue)
+            if adapter is not None and hasattr(adapter, "record_pnl"):
+                adapter.record_pnl(realized)
 
         new_size = pos.size + signed_size
         if new_size != 0 and (pos.size == 0 or ((pos.size > 0) == (new_size > 0))):
