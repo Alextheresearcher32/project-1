@@ -1,0 +1,127 @@
+# WolfPack Strategy Registry
+# enabled: false = strategy is loaded but won't fire signals
+# enabled: true  = strategy fires signals in paper/live loop
+#
+# ML strategies need trained models at data/models/{name}/long.pkl
+# Run: python train_ml_strategies.py --strategy momentum
+# before enabling ml_momentum, ml_meme_coin, or ml_funding_carry.
+
+# ── Hard-coded strategies (no ML, always available) ──────────────────────────
+
+bitcoin_range:
+  enabled: false
+  module: glitz_quant.strategies.bitcoin_range
+  class: BitcoinRangeMomentum
+  venues: [coinbase, kraken, paper]
+  symbols: [BTC-USD]
+  timeframe: 15m
+  params:
+    support_lookback_bars: 48
+    resistance_lookback_bars: 48
+    rsi_period: 14
+    rsi_oversold: 42
+    rsi_overbought: 58
+    rsi_must_turn_up: true
+    zone_proximity_pct: 1.5
+    volume_z_threshold: 0.0
+    atr_period: 14
+    stop_atr_buffer: 1.0
+    max_hold_bars: 32
+    trend_ema_bars: 200
+    require_bounce_candle: false
+    atr_regime_pct: 0.005
+    target_notional_usd: 500
+
+range_trader:
+  enabled: false
+  module: glitz_quant.strategies.range_trader
+  class: RangeTrader
+  venues: [coinbase, kraken, paper]
+  symbols: [BTC-USD]
+  timeframe: 15m
+  params:
+    support_lookback_bars: 48
+    rsi_long_threshold: 50
+    rsi_short_threshold: 50
+    zone_proximity_pct: 2.0
+    volume_z_min: 0.5
+    stop_atr_buffer: 1.5
+    require_candle_pattern: true
+    trend_ema_bars: 0
+    atr_regime_pct: 0.005
+    target_notional_usd: 500
+
+funding_rate_carry:
+  enabled: false
+  module: glitz_quant.strategies.funding_rate
+  class: FundingRateCarry
+  venues: [binance, paper]
+  symbols: [BTC/USDT:USDT]
+  timeframe: 1h
+  params:
+    funding_threshold: 0.0001
+    min_annual_funding_pct: 5.0
+    target_notional_usd: 500
+
+# ── ML strategies (require trained models) ───────────────────────────────────
+# Train with: python train_ml_strategies.py --strategy momentum
+# Models saved to: data/models/ml_momentum/long.pkl + short.pkl
+
+ml_momentum:
+  enabled: true
+  module: glitz_quant.strategies.ml_momentum
+  class: MLMomentumStrategy
+  venues: [coinbase, kraken, paper]
+  symbols: [BTC-USD]
+  timeframe: 15m
+  params:
+    symbol: BTC-USD
+    target_notional_usd: 500
+    min_confidence: 0.40        # lowered for paper mode visibility — retrain will push this back to 0.55
+    atr_regime_pct: 0.005       # skip entries when ATR/price > 0.5%
+    tp_atr_mult: 2.0            # TP at 2× ATR above entry
+    sl_atr_mult: 1.0            # SL at 1× ATR below entry (2:1 R:R)
+    max_hold_bars: 32           # 8 hours on 15m
+    bidirectional: true
+    model_path: data/models/ml_momentum
+
+# Train with: python train_ml_strategies.py --strategy meme_coin
+ml_meme_coin:
+  enabled: false
+  module: glitz_quant.strategies.ml_meme_coin
+  class: MLMemeCoinStrategy
+  venues: [coinbase, kraken, paper]
+  symbols: [BTC-USD]            # swap for SOL-USD, DOGE-USD, etc.
+  timeframe: 15m
+  params:
+    symbol: BTC-USD
+    target_notional_usd: 300   # smaller size — higher risk strategy
+    min_confidence: 0.58
+    atr_regime_pct: 0.008      # looser — pumps happen during volatile periods
+    min_vol_z: 2.0             # require 2σ volume spike to enter
+    tp_atr_mult: 1.5           # tighter TP — meme pumps revert fast
+    sl_atr_mult: 0.75          # tight SL — cut losses fast
+    max_hold_bars: 16          # 4 hours max
+    bidirectional: true
+    model_path: data/models/ml_meme_coin
+
+# Train with: python train_ml_strategies.py --strategy funding_carry
+ml_funding_carry:
+  enabled: false
+  module: glitz_quant.strategies.ml_funding_carry
+  class: MLFundingCarryStrategy
+  venues: [binance, paper]
+  symbols: [BTC/USDT:USDT]
+  timeframe: 15m
+  params:
+    symbol: BTC-USD
+    target_notional_usd: 500
+    min_confidence: 0.58
+    atr_regime_pct: 0.006
+    min_annual_funding: 0.05   # 5% annualized minimum to enter carry
+    max_annual_funding: 2.0    # 200% max — extreme funding reverses violently
+    tp_atr_mult: 1.5
+    sl_atr_mult: 0.75
+    max_hold_bars: 32          # reassess at next funding window
+    bidirectional: true
+    model_path: data/models/ml_funding_carry

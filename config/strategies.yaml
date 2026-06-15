@@ -18,14 +18,43 @@ strategies:
     params:
       support_lookback_bars: 96         # 24h on 15m
       resistance_lookback_bars: 96
-      breakout_confirmation_bars: 3
-      momentum_indicator: rsi
       rsi_period: 14
-      rsi_oversold: 30
+      rsi_oversold: 38                  # raised from 30 — RSI<30 fires ~4x/yr on BTC
       rsi_overbought: 70
-      stop_loss_pct: 1.5
-      take_profit_pct: 3.0
+      rsi_must_turn_up: true            # require RSI[-1] > RSI[-2]; stops mid-cascade entries
+      zone_proximity_pct: 1.0           # loosened from 0.4 — BTC routinely dips <1% before bouncing
+      volume_z_threshold: 0.5
+      atr_period: 14
+      stop_atr_buffer: 1.0
+      trend_ema_bars: 48                # only enter longs when close > EMA(48) ~12h trend filter
+      max_hold_bars: 32                 # 8h time exit — prevents indefinite open positions
       max_concurrent_positions: 1
+      target_notional_usd: 500
+
+  # Pure range-bounce strategy — long at support, short at resistance.
+  # No trend filter, so it trades both sides in any regime.
+  # Requires a candle confirmation (hammer/shooting-star) at the level.
+  range_trader:
+    enabled: false                     # enable after backtest passes
+    module: glitz_quant.strategies.range_trader
+    class: RangeTrader
+    venues: [coinbase, kraken, paper]
+    symbols: [BTC-USD]
+    timeframe: 15m
+    params:
+      support_lookback_bars: 48
+      resistance_lookback_bars: 48
+      rsi_period: 14
+      rsi_long_threshold: 50           # long if RSI < 50 (any pullback) and turning up
+      rsi_short_threshold: 50          # short if RSI > 50 (any extension) and turning down
+      zone_proximity_pct: 2.0          # within 2% of support/resistance
+      volume_z_min: 0.5               # above-average volume required
+      atr_period: 14
+      stop_atr_buffer: 1.5            # wider stop — no trend filter means more false bounces
+      max_hold_bars: 32
+      require_candle_pattern: true     # bounce/shooting-star required (hard gate)
+      trend_ema_bars: 0               # 0 = disabled — both directions always allowed
+      target_notional_usd: 500
 
   # Funding rate carry: go long spot when shorts are overextended (funding very negative).
   funding_rate_carry:
@@ -53,3 +82,64 @@ strategies:
       llm_call_interval_minutes: 60
       min_confidence_threshold: 0.65
       signal_decay_hours: 4
+
+  # ── ML strategies (LightGBM + calibrated confidence scores) ──────────────────
+  # Train with: python train_ml_strategies.py --strategy momentum
+  # Models saved to: data/models/ml_momentum/long.pkl + short.pkl
+
+  ml_momentum:
+    enabled: true
+    module: glitz_quant.strategies.ml_momentum
+    class: MLMomentumStrategy
+    venues: [coinbase, kraken, paper]
+    symbols: [BTC-USD]
+    timeframe: 15m
+    params:
+      symbol: BTC-USD
+      target_notional_usd: 500
+      min_confidence: 0.33          # paper mode — model AUC ~0.51, signals near 0.33
+      atr_regime_pct: 0.005         # skip entries when ATR/price > 0.5%
+      tp_atr_mult: 2.0              # TP at 2× ATR (2:1 R:R)
+      sl_atr_mult: 1.0              # SL at 1× ATR
+      max_hold_bars: 32             # 8 hours on 15m
+      bidirectional: true
+      model_path: data/models/ml_momentum
+
+  ml_meme_coin:
+    enabled: false
+    module: glitz_quant.strategies.ml_meme_coin
+    class: MLMemeCoinStrategy
+    venues: [coinbase, kraken, paper]
+    symbols: [BTC-USD]
+    timeframe: 15m
+    params:
+      symbol: BTC-USD
+      target_notional_usd: 300
+      min_confidence: 0.45
+      atr_regime_pct: 0.008
+      min_vol_z: 2.0
+      tp_atr_mult: 1.5
+      sl_atr_mult: 0.75
+      max_hold_bars: 16
+      bidirectional: true
+      model_path: data/models/ml_meme_coin
+
+  ml_funding_carry:
+    enabled: false
+    module: glitz_quant.strategies.ml_funding_carry
+    class: MLFundingCarryStrategy
+    venues: [coinbase, paper]
+    symbols: [BTC-USD]
+    timeframe: 15m
+    params:
+      symbol: BTC-USD
+      target_notional_usd: 500
+      min_confidence: 0.45
+      atr_regime_pct: 0.006
+      min_annual_funding: 0.05
+      max_annual_funding: 2.0
+      tp_atr_mult: 1.5
+      sl_atr_mult: 0.75
+      max_hold_bars: 32
+      bidirectional: true
+      model_path: data/models/ml_funding_carry

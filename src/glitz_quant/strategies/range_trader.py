@@ -1,25 +1,25 @@
 """
-Bitcoin range-bound momentum strategy — bidirectional.
+Range Trader — pure support/resistance bounce strategy.
 
-LONG  at support : RSI oversold + turning up + price > EMA200 (uptrend)
-SHORT at resistance: RSI overbought + turning down + price < EMA200 (downtrend)
+Buys at support (rides up to resistance) and sells short at resistance
+(rides down to support). No trend-direction filter — works in both
+ranging and trending regimes.
 
-Exit: TP at the opposite range boundary, SL just beyond the entry boundary,
-or time-based exit after max_hold_bars.
-
-Key parameters (v4 — added short side):
-- rsi_oversold  42 : long entry threshold (RSI < 42)
-- rsi_overbought 58 : short entry threshold (RSI > 58); symmetric with 42
-- trend_ema_bars 200: 50-hour filter; long only above EMA, short only below
-- bounce_candle / shooting_star: confidence bonuses, not hard gates
+Differences from BitcoinRangeMomentum:
+- No EMA trend filter. Both long and short fire in any market regime.
+- RSI threshold is looser: < 50 (any pullback) for long, > 50 for short.
+  We care about RSI direction (turning), not extreme oversold/overbought.
+- Candle confirmation (bounce/shooting-star) is a REQUIRED gate, not a bonus.
+  It ensures we only enter on actual level-hold candles, not momentum runs.
+- Zone proximity is 2% (vs 1.5% in bitcoin_range) — catches more touches.
+- ATR stop buffer is 1.5× (vs 1.0×) — wider, because no trend filter
+  means we get caught in more false bounces and need breathing room.
 """
 
 from __future__ import annotations
 
 from decimal import Decimal
 from typing import Any
-
-import pandas as pd
 
 from glitz_quant.data.types import Signal, SignalConfidence, SignalDirection
 from glitz_quant.strategies.base import Strategy, StrategyContext
@@ -37,30 +37,30 @@ from glitz_quant.utils.logging import get_logger
 log = get_logger(__name__)
 
 
-class BitcoinRangeMomentum(Strategy):
-    name = "bitcoin_range"
+class RangeTrader(Strategy):
+    name = "range_trader"
 
     def __init__(self, params: dict[str, Any]):
         super().__init__(params)
         self.support_lookback = int(params.get("support_lookback_bars", 48))
         self.resistance_lookback = int(params.get("resistance_lookback_bars", 48))
         self.rsi_period = int(params.get("rsi_period", 14))
-        self.rsi_oversold = float(params.get("rsi_oversold", 42))
-        self.rsi_overbought = float(params.get("rsi_overbought", 58))
-        self.zone_proximity_pct = float(params.get("zone_proximity_pct", 1.5))
-        self.volume_z_threshold = float(params.get("volume_z_threshold", 0.0))
+        self.rsi_long_threshold = float(params.get("rsi_long_threshold", 50))   # long if RSI < this
+        self.rsi_short_threshold = float(params.get("rsi_short_threshold", 50)) # short if RSI > this
+        self.zone_proximity_pct = float(params.get("zone_proximity_pct", 2.0))
+        self.volume_z_min = float(params.get("volume_z_min", 0.5))   # require above-avg volume
         self.atr_period = int(params.get("atr_period", 14))
-        self.stop_atr_buffer = float(params.get("stop_atr_buffer", 1.0))
-        self.target_notional_usd = Decimal(str(params.get("target_notional_usd", 50)))
-        self.rsi_must_turn_up: bool = bool(params.get("rsi_must_turn_up", True))
+        self.stop_atr_buffer = float(params.get("stop_atr_buffer", 1.5))
+        self.target_notional_usd = Decimal(str(params.get("target_notional_usd", 500)))
         self.max_hold_bars: int = int(params.get("max_hold_bars", 32))
-        # 200 bars = 50h on 15m. Long only above EMA, short only below.
-        # Set 0 to disable (both directions always active).
-        self.trend_ema_bars: int = int(params.get("trend_ema_bars", 200))
-        self.require_bounce_candle: bool = bool(params.get("require_bounce_candle", False))
-        # Regime filter: skip entries when ATR/price > this threshold (trending/volatile).
-        # 0.012 = 1.2% ATR/price — BTC ranges ~0.6–0.9% ATR in consolidation,
-        # spikes to 2–4% during trending/crash phases. Set 0.0 to disable.
+        # Candle pattern is a REQUIRED gate here (unlike bitcoin_range where it's a bonus).
+        # Bounce candle = bullish hammer at support; shooting star = bearish at resistance.
+        self.require_candle_pattern: bool = bool(params.get("require_candle_pattern", True))
+        # Optional trend EMA filter — set to 0 to disable (default: disabled)
+        self.trend_ema_bars: int = int(params.get("trend_ema_bars", 0))
+        # Regime filter: skip entries when ATR/price > threshold (trending market).
+        # 0.012 = 1.2% — consolidation is typically 0.6–0.9%, trending spikes to 2–4%.
+        # Set 0.0 to disable.
         self.atr_regime_pct: float = float(params.get("atr_regime_pct", 0.0))
 
         self._bars_held: int = 0
@@ -89,8 +89,6 @@ class BitcoinRangeMomentum(Strategy):
         last_vol_z = float(vol_z_ser.iloc[-1])
         last_bounce = bool(bounce.iloc[-1])
         last_star = bool(star.iloc[-1])
-        trend_ema_val = float(trend_ema_ser.iloc[-1]) if trend_ema_ser is not None else None
-        prev_close = float(c["close"].iloc[-2]) if len(c) >= 2 else close
 
         if abs(ctx.open_position_size) > 1e-9:
             self._bars_held += 1
@@ -98,34 +96,33 @@ class BitcoinRangeMomentum(Strategy):
         else:
             self._bars_held = 0
 
-        # Regime filter: block entries when market is trending/volatile
+        # Regime filter: skip when ATR/price is too high (trending, not ranging)
         if self.atr_regime_pct > 0.0 and close > 0 and last_atr / close > self.atr_regime_pct:
             return None
 
-        in_uptrend = (
-            trend_ema_val is None
-            or (not pd.isna(trend_ema_val) and close > trend_ema_val)
-        )
-        in_downtrend = (
-            trend_ema_val is None
-            or (not pd.isna(trend_ema_val) and close < trend_ema_val)
-        )
+        # Trend filter (optional — disabled by default)
+        trend_ema_val = float(trend_ema_ser.iloc[-1]) if trend_ema_ser is not None else None
+        allow_long = trend_ema_val is None or close > trend_ema_val
+        allow_short = trend_ema_val is None or close < trend_ema_val
 
-        # ── LONG entry ────────────────────────────────────────────────────────
-        if in_uptrend:
+        # Shared conditions
+        rsi_turning_up = last_rsi > prev_rsi
+        rsi_turning_down = last_rsi < prev_rsi
+        vol_ok = last_vol_z >= self.volume_z_min
+        room_long = (last_res - close) / max(close, 1e-9) > 0.005
+        room_short = (close - last_sup) / max(close, 1e-9) > 0.005
+
+        # ── LONG: price at support, RSI pulling back (< threshold), turning up ──
+        if allow_long:
             near_support = (close - last_sup) / max(last_sup, 1e-9) <= self.zone_proximity_pct / 100
-            oversold = last_rsi < self.rsi_oversold
-            rsi_turning_up = (last_rsi > prev_rsi) if self.rsi_must_turn_up else True
-            vol_ok = last_vol_z >= self.volume_z_threshold
-            room_to_res = (last_res - close) / max(close, 1e-9) > 0.005
-            prev_above_sup = prev_close >= last_sup
+            rsi_ok_long = last_rsi < self.rsi_long_threshold and rsi_turning_up
 
-            if near_support and oversold and rsi_turning_up and vol_ok and room_to_res and prev_above_sup:
-                if not (self.require_bounce_candle and not last_bounce):
+            if near_support and rsi_ok_long and vol_ok and room_long:
+                if not self.require_candle_pattern or last_bounce:
                     stop_price = last_sup - last_atr * self.stop_atr_buffer
-                    confidence = self._long_confidence(last_rsi, last_vol_z, near_support, last_atr, close, last_bounce)
+                    confidence = self._long_confidence(last_rsi, last_vol_z, last_atr, close, last_bounce)
                     log.info(
-                        "bitcoin_range_long",
+                        "range_trader_long",
                         close=close, support=last_sup, resistance=last_res,
                         rsi=last_rsi, vol_z=last_vol_z, confidence=confidence,
                     )
@@ -139,28 +136,24 @@ class BitcoinRangeMomentum(Strategy):
                         stop_loss_price=Decimal(str(round(stop_price, 2))),
                         take_profit_price=Decimal(str(round(last_res, 2))),
                         reason=(
-                            f"LONG: price {close:.2f} near support {last_sup:.2f}, "
-                            f"RSI {last_rsi:.1f} oversold, vol_z {last_vol_z:.2f}"
+                            f"LONG: {close:.0f} at support {last_sup:.0f}, "
+                            f"RSI {last_rsi:.1f}↑, vol_z {last_vol_z:.2f}"
                         ),
-                        metadata={"support": last_sup, "resistance": last_res, "atr": last_atr,
-                                  "rsi": last_rsi, "volume_z": last_vol_z},
+                        metadata={"support": last_sup, "resistance": last_res,
+                                  "atr": last_atr, "rsi": last_rsi, "volume_z": last_vol_z},
                     )
 
-        # ── SHORT entry ───────────────────────────────────────────────────────
-        if in_downtrend:
+        # ── SHORT: price at resistance, RSI extended (> threshold), turning down ─
+        if allow_short:
             near_resistance = (last_res - close) / max(last_res, 1e-9) <= self.zone_proximity_pct / 100
-            overbought = last_rsi > self.rsi_overbought
-            rsi_turning_down = (last_rsi < prev_rsi) if self.rsi_must_turn_up else True
-            vol_ok = last_vol_z >= self.volume_z_threshold
-            room_to_sup = (close - last_sup) / max(close, 1e-9) > 0.005
-            prev_below_res = prev_close <= last_res
+            rsi_ok_short = last_rsi > self.rsi_short_threshold and rsi_turning_down
 
-            if near_resistance and overbought and rsi_turning_down and vol_ok and room_to_sup and prev_below_res:
-                if not (self.require_bounce_candle and not last_star):
+            if near_resistance and rsi_ok_short and vol_ok and room_short:
+                if not self.require_candle_pattern or last_star:
                     stop_price = last_res + last_atr * self.stop_atr_buffer
-                    confidence = self._short_confidence(last_rsi, last_vol_z, near_resistance, last_atr, close, last_star)
+                    confidence = self._short_confidence(last_rsi, last_vol_z, last_atr, close, last_star)
                     log.info(
-                        "bitcoin_range_short",
+                        "range_trader_short",
                         close=close, support=last_sup, resistance=last_res,
                         rsi=last_rsi, vol_z=last_vol_z, confidence=confidence,
                     )
@@ -174,11 +167,11 @@ class BitcoinRangeMomentum(Strategy):
                         stop_loss_price=Decimal(str(round(stop_price, 2))),
                         take_profit_price=Decimal(str(round(last_sup, 2))),
                         reason=(
-                            f"SHORT: price {close:.2f} near resistance {last_res:.2f}, "
-                            f"RSI {last_rsi:.1f} overbought, vol_z {last_vol_z:.2f}"
+                            f"SHORT: {close:.0f} at resistance {last_res:.0f}, "
+                            f"RSI {last_rsi:.1f}↓, vol_z {last_vol_z:.2f}"
                         ),
-                        metadata={"support": last_sup, "resistance": last_res, "atr": last_atr,
-                                  "rsi": last_rsi, "volume_z": last_vol_z},
+                        metadata={"support": last_sup, "resistance": last_res,
+                                  "atr": last_atr, "rsi": last_rsi, "volume_z": last_vol_z},
                     )
 
         return None
@@ -200,11 +193,11 @@ class BitcoinRangeMomentum(Strategy):
 
         reason = None
         if hit_tp:
-            reason = f"TP reached: {close:.2f} {'>' if is_long else '<'}= {tp:.2f}"
+            reason = f"TP: {close:.0f} {'≥' if is_long else '≤'} {tp:.0f}"
         elif hit_sl:
-            reason = f"SL hit: {close:.2f} {'<' if is_long else '>'}= {sl:.2f}"
+            reason = f"SL: {close:.0f} {'≤' if is_long else '≥'} {sl:.0f}"
         elif self._bars_held >= self.max_hold_bars:
-            reason = f"max hold {self.max_hold_bars} bars at {close:.2f}"
+            reason = f"max hold {self.max_hold_bars} bars at {close:.0f}"
 
         if reason:
             return Signal(
@@ -218,48 +211,45 @@ class BitcoinRangeMomentum(Strategy):
         return None
 
     @staticmethod
-    def _long_confidence(rsi_val: float, vol_z: float, near_support: bool, atr_val: float, close: float, bounce: bool = False) -> float:
-        score = 0.5
-        if rsi_val < 25:
-            score += 0.15
-        elif rsi_val < 30:
-            score += 0.10
-        elif rsi_val < 35:
-            score += 0.05
-        if vol_z >= 1.5:
-            score += 0.15
+    def _long_confidence(rsi_val: float, vol_z: float, atr_val: float, close: float, bounce: bool) -> float:
+        score = 0.45
+        # RSI the further below 50 the better (more pullback = stronger bounce candidate)
+        if rsi_val < 30:
+            score += 0.20
+        elif rsi_val < 40:
+            score += 0.12
+        elif rsi_val < 45:
+            score += 0.06
+        if vol_z >= 2.0:
+            score += 0.18
         elif vol_z >= 1.0:
-            score += 0.08
+            score += 0.10
         elif vol_z >= 0.5:
-            score += 0.03
-        if near_support:
             score += 0.05
         if bounce:
-            score += 0.15
+            score += 0.15  # confirmed hammer candle
         if close > 0 and atr_val / close > 0.03:
-            score -= 0.1
+            score -= 0.10
         return max(0.0, min(0.95, score))
 
     @staticmethod
-    def _short_confidence(rsi_val: float, vol_z: float, near_resistance: bool, atr_val: float, close: float, star: bool = False) -> float:
-        score = 0.5
-        # deeper overbought → more confidence (mirror of long side)
-        if rsi_val > 75:
-            score += 0.15
-        elif rsi_val > 70:
-            score += 0.10
-        elif rsi_val > 65:
-            score += 0.05
-        if vol_z >= 1.5:
-            score += 0.15
+    def _short_confidence(rsi_val: float, vol_z: float, atr_val: float, close: float, star: bool) -> float:
+        score = 0.45
+        # RSI the further above 50 the better
+        if rsi_val > 70:
+            score += 0.20
+        elif rsi_val > 60:
+            score += 0.12
+        elif rsi_val > 55:
+            score += 0.06
+        if vol_z >= 2.0:
+            score += 0.18
         elif vol_z >= 1.0:
-            score += 0.08
+            score += 0.10
         elif vol_z >= 0.5:
-            score += 0.03
-        if near_resistance:
             score += 0.05
         if star:
-            score += 0.15
+            score += 0.15  # confirmed shooting-star candle
         if close > 0 and atr_val / close > 0.03:
-            score -= 0.1
+            score -= 0.10
         return max(0.0, min(0.95, score))

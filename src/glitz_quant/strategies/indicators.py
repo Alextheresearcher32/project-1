@@ -78,6 +78,30 @@ def bounce_candle(open_: pd.Series, high: pd.Series, low: pd.Series, close: pd.S
     )
 
 
+def shooting_star_candle(open_: pd.Series, high: pd.Series, low: pd.Series, close: pd.Series) -> pd.Series:
+    """
+    Bearish reversal at resistance: shooting-star / bearish engulfing pattern.
+    Mirror of bounce_candle — large upper wick, small body, small lower wick.
+    Returns boolean series.
+    """
+    body = (close - open_).abs()
+    candle_range = (high - low).replace(0, np.nan)
+    lower_wick = pd.concat([open_, close], axis=1).min(axis=1) - low
+    upper_wick = high - pd.concat([open_, close], axis=1).max(axis=1)
+
+    is_bearish = close < open_
+    upper_wick_ratio = (upper_wick / candle_range).fillna(0)
+    lower_wick_ratio = (lower_wick / candle_range).fillna(0)
+    body_ratio = (body / candle_range).fillna(0)
+
+    return (
+        is_bearish
+        & (upper_wick_ratio >= 0.4)
+        & (lower_wick_ratio <= 0.25)
+        & (body_ratio >= 0.15)
+    )
+
+
 def volume_z(volume: pd.Series, lookback: int = 20) -> pd.Series:
     """Z-score of volume vs rolling lookback. > 1 means above average."""
     mean = volume.rolling(window=lookback, min_periods=lookback).mean()

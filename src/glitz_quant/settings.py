@@ -83,6 +83,16 @@ class Settings(BaseSettings):
     cryptocompare_api_key: SecretStr | None = None
     pyth_hermes_url: str = "https://hermes.pyth.network"
 
+    # ThetaData (options/equities market data terminal)
+    thetadata_api_key: SecretStr | None = None
+    thetadata_host: str = "127.0.0.1"
+    thetadata_port: int = 25510
+
+    # Oanda (forex broker — data + execution)
+    oanda_api_key: SecretStr | None = None
+    oanda_account_id: str | None = None
+    oanda_practice: bool = True  # False = live trading account
+
     # CEX
     coinbase_api_key: SecretStr | None = None
     coinbase_api_secret: SecretStr | None = None

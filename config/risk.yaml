@@ -26,7 +26,7 @@ account:
 
 # -------- Per-order limits --------
 order:
-  max_notional_usd: 100               # single order ceiling
+  max_notional_usd: 600               # raised to allow $500 ml_momentum paper trades
   max_size_pct_of_book: 0.5           # don't be more than 0.5% of visible liquidity
   min_size_usd: 5                     # avoid dust
   allowed_types:                      # explicit whitelist

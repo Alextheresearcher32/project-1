@@ -54,6 +54,8 @@ class Venue(str, Enum):
     GEMINI = "gemini"
     HYPERLIQUID = "hyperliquid"
     JUPITER = "jupiter"
+    OANDA = "oanda"
+    THETADATA = "thetadata"
     PAPER = "paper"
 
 

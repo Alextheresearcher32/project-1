@@ -1,5 +1,11 @@
 """
-Top-level orchestrator. Pulls data, runs strategies, routes signals to OMS.
+Top-level orchestrator.
+
+New architecture:
+  ThetaData/Oanda → Redis binary (0.1ms) + Redis Streams (push)
+                  → 6 Wolves (ThreadPoolExecutor, parallel)
+                  → Boardroom (asyncio.gather, ~7.7s not 30.8s)
+                  → Chairman → Supervisor → ThetaData/Oanda APIs
 
 Entry point:
   uv run python -m glitz_quant.orchestrator.runner
@@ -12,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import signal as os_signal
-from datetime import datetime, timezone
+import time
 from decimal import Decimal
 from typing import Any
 
@@ -21,15 +27,22 @@ import typer
 
 import ccxt.async_support as ccxt  # type: ignore[import-untyped]
 
-from glitz_quant.agents.signal_analyst import SignalAnalyst
+from glitz_quant.agents.boardroom import Boardroom, BoardroomContext
+from glitz_quant.agents.chairman import ChairmanAgent, Supervisor
 from glitz_quant.agents.llm_router import LLMRouter
+from glitz_quant.agents.signal_analyst import SignalAnalyst
 from glitz_quant.data.ingest.ccxt_connector import CCXTIngest
+from glitz_quant.data.ingest.oanda_connector import OandaConnector
+from glitz_quant.data.ingest.thetadata_connector import ThetaDataConnector
 from glitz_quant.data.store.redis_cache import RedisCache
+from glitz_quant.data.store.redis_streams import RedisStreams
 from glitz_quant.data.store.supabase_store import SupabaseStore
 from glitz_quant.data.types import Venue
 from glitz_quant.execution.adapters.ccxt_adapter import CCXTAdapter
+from glitz_quant.execution.adapters.oanda_adapter import OandaAdapter
 from glitz_quant.execution.oms import build_default_oms
 from glitz_quant.monitoring import alerts, metrics
+from glitz_quant.orchestrator.wolves import WolfJob, WolfPack
 from glitz_quant.risk import kill_switch
 from glitz_quant.settings import (
     LiveTradingGate,
@@ -44,7 +57,6 @@ from glitz_quant.utils.logging import configure_logging, get_logger
 configure_logging()
 log = get_logger(__name__)
 app = typer.Typer(add_completion=False)
-
 
 VENUE_BY_NAME = {v.value: v for v in Venue}
 
@@ -62,7 +74,16 @@ def _load_strategies() -> dict[str, Strategy]:
     return loaded
 
 
-async def _bootstrap() -> tuple[RedisCache, SupabaseStore | None, dict[Venue, CCXTIngest], Any]:
+async def _bootstrap(
+    streams: RedisStreams,
+) -> tuple[
+    RedisCache,
+    SupabaseStore | None,
+    dict[Venue, CCXTIngest],
+    OandaConnector | None,
+    ThetaDataConnector | None,
+    Any,
+]:
     cache = RedisCache()
     await cache.connect()
 
@@ -75,7 +96,7 @@ async def _bootstrap() -> tuple[RedisCache, SupabaseStore | None, dict[Venue, CC
             log.warning("supabase_unavailable", err=str(e))
             store = None
 
-    # Ingest workers — only enabled venues with credentials (or all read-only public)
+    # CCXT ingest workers (crypto venues)
     ingests: dict[Venue, CCXTIngest] = {}
     for venue in (Venue.COINBASE, Venue.KRAKEN, Venue.BINANCE_US):
         try:
@@ -85,11 +106,33 @@ async def _bootstrap() -> tuple[RedisCache, SupabaseStore | None, dict[Venue, CC
         except Exception as e:
             log.warning("ingest_init_failed", venue=venue.value, err=str(e))
 
+    # Oanda connector (forex streaming)
+    oanda: OandaConnector | None = None
+    s = get_settings()
+    if s.oanda_api_key and s.oanda_account_id:
+        try:
+            oanda = OandaConnector(streams)
+            await oanda.start()
+        except Exception as e:
+            log.warning("oanda_connector_failed", err=str(e))
+            oanda = None
+
+    # ThetaData connector (equities/options)
+    thetadata: ThetaDataConnector | None = None
+    if s.thetadata_api_key:
+        try:
+            thetadata = ThetaDataConnector(streams)
+            await thetadata.start()
+        except Exception as e:
+            log.warning("thetadata_connector_failed", err=str(e))
+            thetadata = None
+
+    # OMS
     oms = build_default_oms(cache=cache, store=store)
 
-    # Register live adapters if live gate is open
     gate_open, _ = LiveTradingGate.check()
-    if get_settings().glitz_mode == Mode.LIVE and gate_open:
+    if s.glitz_mode == Mode.LIVE and gate_open:
+        # CCXT live adapters
         for venue in (Venue.COINBASE, Venue.KRAKEN, Venue.BINANCE_US):
             try:
                 adapter = CCXTAdapter(venue)
@@ -97,13 +140,16 @@ async def _bootstrap() -> tuple[RedisCache, SupabaseStore | None, dict[Venue, CC
                 oms.register_adapter(adapter)
             except Exception as e:
                 log.warning("live_adapter_failed", venue=venue.value, err=str(e))
+        # Oanda live adapter
+        if s.oanda_api_key and s.oanda_account_id:
+            try:
+                oanda_adapter = OandaAdapter()
+                await oanda_adapter.start()
+                oms.register_adapter(oanda_adapter)
+            except Exception as e:
+                log.warning("oanda_adapter_failed", err=str(e))
 
-    return cache, store, ingests, oms
-
-
-def _candles_from_supabase_or_ingest_sync(ingest: CCXTIngest, symbol: str, tf: str) -> pd.DataFrame:
-    """Synchronous wrapper for clarity — called inside an async context already."""
-    raise NotImplementedError  # not used; orchestrator uses async path below
+    return cache, store, ingests, oanda, thetadata, oms
 
 
 async def _fetch_candles_df(
@@ -113,22 +159,40 @@ async def _fetch_candles_df(
     if not candles:
         return pd.DataFrame()
     df = pd.DataFrame(
-        [{"ts": c.ts, "open": float(c.open), "high": float(c.high),
-          "low": float(c.low), "close": float(c.close), "volume": float(c.volume)}
-         for c in candles]
+        [
+            {
+                "ts": c.ts,
+                "open": float(c.open),
+                "high": float(c.high),
+                "low": float(c.low),
+                "close": float(c.close),
+                "volume": float(c.volume),
+            }
+            for c in candles
+        ]
     )
     return df.set_index("ts")
 
 
+_funding_cache: tuple[float, float | None] = (0.0, None)  # (last_fetch_ts, value)
+_FUNDING_CACHE_TTL = 300  # 5 minutes — avoid Binance geo-block spam every 30s
+
+
 async def _fetch_funding_rate(symbol: str = "BTC/USDT") -> float | None:
-    """Fetch perpetuals funding rate from Binance (public, no auth)."""
+    global _funding_cache
+    now = time.time()
+    if now - _funding_cache[0] < _FUNDING_CACHE_TTL:
+        return _funding_cache[1]
+    exchange = ccxt.binance()
     try:
-        exchange = ccxt.binance()
         data = await exchange.fetch_funding_rate(symbol)
         await exchange.close()
         rate = data.get("fundingRate")
-        return float(rate) if rate is not None else None
+        result = float(rate) if rate is not None else None
+        _funding_cache = (now, result)
+        return result
     except Exception as e:
+        _funding_cache = (now, None)  # backoff 5 min before next attempt
         log.warning("funding_rate_fetch_failed", symbol=symbol, err=str(e))
         try:
             await exchange.close()
@@ -140,11 +204,18 @@ async def _fetch_funding_rate(symbol: str = "BTC/USDT") -> float | None:
 class Runner:
     def __init__(self) -> None:
         self._stop = asyncio.Event()
+        self.streams: RedisStreams = RedisStreams()
         self.cache: RedisCache | None = None
         self.store: SupabaseStore | None = None
         self.ingests: dict[Venue, CCXTIngest] = {}
+        self.oanda: OandaConnector | None = None
+        self.thetadata: ThetaDataConnector | None = None
         self.oms: Any = None
         self.strategies: dict[str, Strategy] = {}
+        self.wolf_pack: WolfPack | None = None
+        self.boardroom: Boardroom | None = None
+        self.chairman: ChairmanAgent | None = None
+        self.supervisor: Supervisor | None = None
         self.recent_signals: dict[str, list] = {}
         self._last_breaker_status: dict[str, str] = {}
         self._last_signal_analysis_ts: float = 0.0
@@ -159,9 +230,7 @@ class Runner:
 
     async def _log_connection_status(self) -> None:
         s = get_settings()
-        connected = []
-        missing = []
-
+        connected, missing = [], []
         checks = {
             "Anthropic": s.anthropic_api_key,
             "OpenRouter": s.openrouter_api_key,
@@ -170,12 +239,13 @@ class Runner:
             "Coinbase": s.coinbase_api_key,
             "Kraken": s.kraken_api_key,
             "Binance.US": s.binance_us_api_key,
+            "Oanda": s.oanda_api_key,
+            "ThetaData": s.thetadata_api_key,
             "Telegram": s.telegram_bot_token,
             "Discord": s.discord_webhook_url,
         }
         for name, val in checks.items():
             (connected if val else missing).append(name)
-
         log.info("api_key_status", connected=connected, missing=missing)
         await alerts.broadcast(
             "info",
@@ -184,11 +254,51 @@ class Runner:
             f"Missing: {', '.join(missing) or 'none'}",
         )
 
+    async def _run_boardroom_pipeline(
+        self, signal_strategy: str, symbol: str, candles: pd.DataFrame, equity: Decimal
+    ) -> None:
+        """
+        Full Boardroom → Chairman → Supervisor pipeline for a given symbol.
+        Called when a Wolf produces a high-confidence signal that warrants LLM review.
+        """
+        if self.boardroom is None or self.chairman is None or self.supervisor is None:
+            return
+
+        ctx = BoardroomContext(
+            symbol=symbol,
+            candles=candles,
+            macro_summary="",
+            position_context=f"equity={equity:.2f}",
+            pnl_summary=f"daily_pnl={self.oms.daily_pnl_usd:.2f}",
+            urgency="medium",
+        )
+        minutes = await self.boardroom.convene(ctx)
+
+        if not minutes.quorum:
+            log.info("boardroom_no_quorum", symbol=symbol)
+            return
+
+        if minutes.signal and minutes.signal.direction == "skip":
+            log.info("boardroom_quant_skip", symbol=symbol)
+            return
+
+        decision = await self.chairman.decide(minutes, strategy=signal_strategy)
+
+        pos = self.oms.get_position(Venue.OANDA, symbol) if Venue.OANDA in self.oms.adapters else None
+        pos_notional = pos.notional if pos else Decimal(0)
+        verdict = self.supervisor.review(decision, pos_notional, equity)
+
+        if not verdict.approved:
+            log.info("supervisor_blocked", symbol=symbol, reason=verdict.reason)
+            return
+
+        if decision.signal is not None:
+            await self.oms.process_signal(decision.signal)
+
     async def run(self) -> None:
         s = get_settings()
         log.info("orchestrator_starting", env=s.glitz_env.value, mode=s.glitz_mode.value)
 
-        # Metrics endpoint
         try:
             mon = get_app_config().get("monitoring", {})
             if mon.get("prometheus_enabled", True):
@@ -197,53 +307,97 @@ class Runner:
             log.warning("metrics_server_failed", err=str(e))
 
         self._install_signal_handlers()
+
+        # Connect Redis Streams first (connectors need it)
+        await self.streams.connect()
+
         await self._log_connection_status()
-        self.cache, self.store, self.ingests, self.oms = await _bootstrap()
+        self.cache, self.store, self.ingests, self.oanda, self.thetadata, self.oms = (
+            await _bootstrap(self.streams)
+        )
         self.strategies = _load_strategies()
+
+        # 6 Wolves
+        wolves_cfg = get_app_config().get("orchestrator", {}).get("wolves", {})
+        max_wolves = int(wolves_cfg.get("max_workers", 6))
+        self.wolf_pack = WolfPack(self.strategies, max_wolves=max_wolves)
+
+        # Boardroom pipeline (only if an LLM key is configured)
+        llm_cfg_ok = bool(s.anthropic_api_key or s.openrouter_api_key)
+        boardroom_enabled = get_app_config().get("orchestrator", {}).get("boardroom_enabled", True)
+        if llm_cfg_ok and boardroom_enabled:
+            llm = LLMRouter(store=self.store)
+            self.boardroom = Boardroom(llm, store=self.store)
+            self.chairman = ChairmanAgent(llm)
+            sup_cfg = get_app_config().get("supervisor", {})
+            self.supervisor = Supervisor(
+                max_position_notional_usd=float(sup_cfg.get("max_position_notional_usd", 5000)),
+                min_equity_floor_usd=float(sup_cfg.get("min_equity_floor_usd", 500)),
+            )
+            log.info("boardroom_pipeline_enabled")
+        else:
+            log.warning("boardroom_pipeline_disabled", reason="no LLM key or disabled in config")
 
         await alerts.broadcast("info", f"glitz-quant starting in {s.glitz_mode.value} mode")
 
         strategy_cfg = get_strategies_config().get("strategies", {})
+        orchestrator_cfg = get_app_config().get("orchestrator", {})
+        tick_interval = int(orchestrator_cfg.get("tick_interval_seconds", 30))
+        boardroom_min_confidence = float(orchestrator_cfg.get("boardroom_min_confidence", 0.6))
+        analyst_interval = int(orchestrator_cfg.get("signal_analyst_interval_seconds", 14400))
 
         try:
+            tick_count = 0
             while not self._stop.is_set():
+                tick_count += 1
+                log.info("tick_start", n=tick_count)
+
                 if kill_switch.is_killed():
                     log.error("kill_switch_active_runner_halting")
                     await alerts.broadcast("critical", "kill switch active — runner halting")
                     break
 
+                funding_rate = await _fetch_funding_rate()
+
+                # Build context map for all strategies × symbols
+                contexts: dict[tuple[str, str], StrategyContext] = {}
+                candles_cache: dict[tuple[str, str], pd.DataFrame] = {}
+
                 for name, strat in self.strategies.items():
                     sc = strategy_cfg.get(name, {})
+                    if not sc.get("enabled"):
+                        continue
                     symbols = sc.get("symbols", ["BTC-USD"])
                     tf = sc.get("timeframe", "15m")
-                    venues = [VENUE_BY_NAME[v] for v in sc.get("venues", ["coinbase"])
-                              if VENUE_BY_NAME.get(v) in self.ingests]
+                    venues = [
+                        VENUE_BY_NAME[v]
+                        for v in sc.get("venues", ["coinbase"])
+                        if VENUE_BY_NAME.get(v) in self.ingests
+                    ]
                     if not venues:
                         continue
                     ingest = self.ingests[venues[0]]
 
-                    funding_rate = await _fetch_funding_rate()
-
                     for sym in symbols:
+                        log.info("tick_fetch_candles", strategy=name, sym=sym, venue=venues[0].value)
                         df = await _fetch_candles_df(ingest, sym, tf, limit=500)
+                        log.info("tick_candles_received", strategy=name, sym=sym, n=len(df))
                         if df.empty:
                             continue
-                        # Update ticker cache too (cheap)
+                        candles_cache[(name, sym)] = df
+
                         t = await ingest.fetch_ticker(sym)
                         if t:
                             await self.cache.set_ticker(t)  # type: ignore[union-attr]
 
-                        # Current position
                         venue = venues[0]
                         pos = self.oms.get_position(venue, sym)
-
                         equity = await self.oms.get_total_equity()
-
                         extra: dict[str, Any] = {}
                         if funding_rate is not None:
                             extra["funding_rate_8h"] = funding_rate
 
-                        ctx = StrategyContext(
+                        contexts[(name, sym)] = StrategyContext(
                             candles=df,
                             open_position_size=float(pos.size),
                             open_position_avg_price=float(pos.avg_entry_price),
@@ -251,26 +405,39 @@ class Runner:
                             recent_signals=self.recent_signals.get(name, [])[-10:],
                             extra_data=extra,
                         )
-                        sig = strat.on_candle(ctx)
-                        if sig is not None:
-                            self.recent_signals.setdefault(name, []).append(sig)
-                            metrics.signals_emitted_total.labels(
-                                strategy=name, direction=sig.direction.value
-                            ).inc()
-                            await self.oms.process_signal(sig)
 
-                # Circuit breakers passive checks
+                # 6 Wolves — all strategies run in parallel
+                assert self.wolf_pack is not None
+                jobs = self.wolf_pack.build_jobs(strategy_cfg, contexts)
+                wolf_signals = await self.wolf_pack.hunt(jobs)
+
+                equity = await self.oms.get_total_equity()
+
+                for sig in wolf_signals:
+                    self.recent_signals.setdefault(sig.strategy, []).append(sig)
+                    metrics.signals_emitted_total.labels(
+                        strategy=sig.strategy, direction=sig.direction.value
+                    ).inc()
+
+                    # High-confidence signals go through the Boardroom → Chairman → Supervisor
+                    if sig.confidence >= boardroom_min_confidence and self.boardroom is not None:
+                        candles = candles_cache.get(
+                            (sig.strategy.split(":")[-1], sig.symbol), pd.DataFrame()
+                        )
+                        await self._run_boardroom_pipeline(sig.strategy, sig.symbol, candles, equity)
+                    else:
+                        # Low-confidence: send directly to OMS without LLM overhead
+                        await self.oms.process_signal(sig)
+
+                # Circuit breakers
                 staleness_events = self.oms.breakers.check_data_staleness()
                 for ev in staleness_events:
                     await alerts.broadcast("warning", f"data staleness: {ev.message}")
 
-                # Account equity snapshot for breakers + metrics + store
-                equity = await self.oms.get_total_equity()
                 metrics.account_equity_usd.set(float(equity))
                 metrics.account_pnl_daily_usd.set(float(self.oms.daily_pnl_usd))
                 self.oms.breakers.observe_equity(equity)
 
-                # Alert on newly-tripped circuit breakers
                 current_status = self.oms.breakers.status()
                 for name, msg in current_status.items():
                     if name not in self._last_breaker_status:
@@ -281,32 +448,43 @@ class Runner:
                         metrics.circuit_breaker_active.labels(name=name).set(0)
                 self._last_breaker_status = current_status
 
-                # Signal analyst slow loop — runs every 4 hours if store is available
-                import time as _time
-                analyst_interval = int(get_app_config().get("orchestrator", {}).get("signal_analyst_interval_seconds", 14400))
-                if self.store is not None and (_time.time() - self._last_signal_analysis_ts) >= analyst_interval:
+                # Signal analyst slow loop (every 4 hours)
+                if self.store is not None and (time.time() - self._last_signal_analysis_ts) >= analyst_interval:
+                    self._last_signal_analysis_ts = time.time()  # update first to prevent retry-spam on failure
                     try:
                         llm = LLMRouter(store=self.store)
                         analyst = SignalAnalyst(llm=llm, store=self.store)
                         report = await analyst.run(lookback_days=30)
                         if report is not None:
                             await alerts.broadcast("info", analyst.format_broadcast(report))
-                        self._last_signal_analysis_ts = _time.time()
                     except Exception as e:
                         log.warning("signal_analyst_failed", err=str(e))
 
-                await asyncio.sleep(int(get_app_config().get("orchestrator", {}).get("tick_interval_seconds", 30)))
+                await asyncio.sleep(tick_interval)
+
         finally:
             await self._teardown()
             await alerts.broadcast("info", "glitz-quant stopped")
 
     async def _teardown(self) -> None:
         log.info("orchestrator_shutdown_starting")
+        if self.wolf_pack:
+            self.wolf_pack.shutdown()
         for ing in self.ingests.values():
             try:
                 await ing.stop()
             except Exception as e:
                 log.warning("ingest_stop_failed", err=str(e))
+        if self.oanda:
+            try:
+                await self.oanda.stop()
+            except Exception as e:
+                log.warning("oanda_connector_stop_failed", err=str(e))
+        if self.thetadata:
+            try:
+                await self.thetadata.stop()
+            except Exception as e:
+                log.warning("thetadata_connector_stop_failed", err=str(e))
         try:
             for v, a in (self.oms.adapters.items() if self.oms else []):
                 await a.stop()
@@ -316,6 +494,7 @@ class Runner:
             await self.store.close()
         if self.cache is not None:
             await self.cache.close()
+        await self.streams.close()
         log.info("orchestrator_shutdown_complete")
 
 

@@ -1,11 +1,15 @@
 """
-SignalAnalyst — two-model pipeline via litellm → OpenRouter.
+SignalAnalyst — two-model pipeline via litellm.
 
-Step 1 (DeepSeek): reads raw signal + trade data, extracts statistical
-  patterns — win rate, confidence calibration, indicator correlations.
+Step 1 (Claude Haiku → DeepSeek fallback): reads raw signal + trade data,
+  extracts statistical patterns — win rate, confidence calibration,
+  indicator correlations.
 
-Step 2 (MiniMax M3): receives DeepSeek's pattern extraction and
-  synthesizes it into a final structured report with recommendations.
+Step 2 (Claude Haiku → MiniMax M3 fallback): receives step-1 findings
+  and synthesizes a final structured report with recommendations.
+
+Primary: Anthropic Claude Haiku (fast, cheap, already connected).
+Fallback: OpenRouter (DeepSeek for step 1, MiniMax M3 for step 2).
 
 Runs on a slow loop (every few hours). Output is broadcast via
 Telegram/Discord and persisted in agent_runs.
@@ -24,9 +28,12 @@ from glitz_quant.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-# litellm model strings via OpenRouter
-DEEPSEEK_MODEL = "openrouter/deepseek/deepseek-chat"       # Step 1: pattern extraction
-MINIMAX_MODEL = "openrouter/minimax/minimax-m3"             # Step 2: synthesis + recommendations
+# Primary: local Mistral via Ollama (free, no credits needed)
+MISTRAL_MODEL = "ollama/mistral"
+
+# OpenRouter fallbacks (used only if Ollama fails)
+DEEPSEEK_FALLBACK = "openrouter/deepseek/deepseek-chat"
+MINIMAX_FALLBACK = "openrouter/minimax/minimax-m3"
 
 
 class SignalAnalysisReport(BaseModel):
@@ -179,14 +186,15 @@ class SignalAnalyst:
             "List your statistical findings as bullet points. No recommendations yet."
         )
         patterns, _ = await self.llm.complete(
-            agent_name=f"{self.name}:deepseek",
+            agent_name=f"{self.name}:step1",
             system=deepseek_system,
             user=deepseek_user,
-            model=DEEPSEEK_MODEL,
+            model=MISTRAL_MODEL,
+            fallback_model=DEEPSEEK_FALLBACK,
             temperature=0.1,
             max_tokens=1000,
         )
-        log.info("signal_analyst_deepseek_done", chars=len(patterns))
+        log.info("signal_analyst_step1_done", chars=len(patterns))
 
         # ── Step 2: MiniMax M3 synthesizes into a structured report ───────
         minimax_system = (
@@ -201,11 +209,12 @@ class SignalAnalyst:
             "Produce the final structured report."
         )
         report: SignalAnalysisReport = await self.llm.complete_structured(
-            agent_name=f"{self.name}:minimax",
+            agent_name=f"{self.name}:step2",
             system=minimax_system,
             user=minimax_user,
             schema=SignalAnalysisReport,
-            model=MINIMAX_MODEL,
+            model=MISTRAL_MODEL,
+            fallback_model=MINIMAX_FALLBACK,
             temperature=0.1,
             max_tokens=1500,
         )
