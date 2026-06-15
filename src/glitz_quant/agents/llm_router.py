@@ -1,6 +1,11 @@
 """
-LLM router. Single interface for Anthropic, Google, Groq, xAI, OpenRouter.
-Uses litellm for provider abstraction and instructor for structured output.
+LLM router. Single interface for Ollama (local), HuggingFace, Anthropic,
+OpenRouter, and others. Uses litellm for provider abstraction.
+
+Provider priority (default):
+  1. Ollama  — local, free, private (Hermes 3 / Mistral)
+  2. HuggingFace — serverless Inference API, free tier
+  3. OpenRouter / Anthropic — paid cloud fallback
 
 All calls are logged to the agent_runs table (latency, tokens, cost, output).
 """
@@ -24,11 +29,13 @@ T = TypeVar("T", bound=BaseModel)
 
 # Provider-specific model defaults. Override in code or settings.yaml.
 DEFAULT_MODELS = {
-    LLMProvider.ANTHROPIC: "anthropic/claude-opus-4-7",
-    LLMProvider.GOOGLE: "gemini/gemini-2.0-flash",
-    LLMProvider.GROQ: "groq/llama-3.3-70b-versatile",
-    LLMProvider.XAI: "xai/grok-2",
-    LLMProvider.OPENROUTER: "openrouter/anthropic/claude-opus-4-7",
+    LLMProvider.OLLAMA:       "ollama/hermes3",
+    LLMProvider.HUGGINGFACE:  "huggingface/NousResearch/Hermes-3-Llama-3.1-8B",
+    LLMProvider.ANTHROPIC:    "anthropic/claude-haiku-4-5-20251001",
+    LLMProvider.OPENROUTER:   "openrouter/deepseek/deepseek-chat",
+    LLMProvider.GOOGLE:       "gemini/gemini-2.0-flash",
+    LLMProvider.GROQ:         "groq/llama-3.3-70b-versatile",
+    LLMProvider.XAI:          "xai/grok-2",
 }
 
 
@@ -42,16 +49,17 @@ def _configure_litellm() -> None:
     s = get_settings()
 
     _env_map = {
-        "ANTHROPIC_API_KEY": s.anthropic_api_key,
-        "OPENAI_API_KEY": s.openai_api_key,
-        "GOOGLE_API_KEY": s.google_api_key,
-        "GROQ_API_KEY": s.groq_api_key,
-        "XAI_API_KEY": s.xai_api_key,
-        "OPENROUTER_API_KEY": s.openrouter_api_key,
+        "ANTHROPIC_API_KEY":    s.anthropic_api_key,
+        "OPENAI_API_KEY":       s.openai_api_key,
+        "GOOGLE_API_KEY":       s.google_api_key,
+        "GROQ_API_KEY":         s.groq_api_key,
+        "XAI_API_KEY":          s.xai_api_key,
+        "OPENROUTER_API_KEY":   s.openrouter_api_key,
+        "HUGGINGFACE_API_KEY":  s.huggingface_api_key,
     }
     for var, secret in _env_map.items():
         if secret:
-            os.environ[var] = secret.get_secret_value()  # force-set, don't skip if already empty
+            os.environ[var] = secret.get_secret_value()
 
     # litellm provider-specific attrs (legacy path — keep both)
     if s.anthropic_api_key:
@@ -66,6 +74,8 @@ def _configure_litellm() -> None:
         litellm.xai_key = s.xai_api_key.get_secret_value()
     if s.openrouter_api_key:
         litellm.openrouter_key = s.openrouter_api_key.get_secret_value()
+    if s.huggingface_api_key:
+        litellm.huggingface_key = s.huggingface_api_key.get_secret_value()
 
 
 _configure_litellm()
@@ -107,7 +117,9 @@ class LLMRouter:
                 api_key: str | None = None
                 api_base: str | None = None
                 if model_name.startswith("ollama/"):
-                    api_base = "http://localhost:11434"
+                    api_base = s.ollama_base_url
+                elif model_name.startswith("huggingface/") and s.huggingface_api_key:
+                    api_key = s.huggingface_api_key.get_secret_value()
                 elif model_name.startswith("openrouter/") and s.openrouter_api_key:
                     api_key = s.openrouter_api_key.get_secret_value()
                 elif model_name.startswith("anthropic/") and s.anthropic_api_key:

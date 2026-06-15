@@ -1,18 +1,19 @@
 """
-SignalAnalyst — two-model pipeline via litellm.
+SignalAnalyst — two-model pipeline, fully local-first.
 
-Step 1 (Claude Haiku → DeepSeek fallback): reads raw signal + trade data,
+Step 1 (Mistral → HuggingFace fallback): reads raw signal + trade data,
   extracts statistical patterns — win rate, confidence calibration,
-  indicator correlations.
+  indicator correlations. Mistral is fast and good at open-ended analysis.
 
-Step 2 (Claude Haiku → MiniMax M3 fallback): receives step-1 findings
-  and synthesizes a final structured report with recommendations.
+Step 2 (Hermes 3 → HuggingFace fallback): receives step-1 findings and
+  synthesizes a final structured JSON report. Hermes 3 (NousResearch) is
+  specifically trained for structured output / JSON / tool use — much more
+  reliable than generic models at following exact schemas.
 
-Primary: Anthropic Claude Haiku (fast, cheap, already connected).
-Fallback: OpenRouter (DeepSeek for step 1, MiniMax M3 for step 2).
+Provider priority: Ollama (local, free) → HuggingFace Inference API → OpenRouter.
 
-Runs on a slow loop (every few hours). Output is broadcast via
-Telegram/Discord and persisted in agent_runs.
+Runs on a slow loop (every 4 hours). Output is broadcast via Telegram/Discord
+and persisted in agent_runs.
 """
 
 from __future__ import annotations
@@ -28,12 +29,13 @@ from glitz_quant.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-# Primary: local Mistral via Ollama (free, no credits needed)
-MISTRAL_MODEL = "ollama/mistral"
+# Step 1: pattern extraction — Mistral (fast, open-ended prose)
+STEP1_MODEL    = "ollama/mistral"
+STEP1_FALLBACK = "huggingface/mistralai/Mistral-7B-Instruct-v0.3"
 
-# OpenRouter fallbacks (used only if Ollama fails)
-DEEPSEEK_FALLBACK = "openrouter/deepseek/deepseek-chat"
-MINIMAX_FALLBACK = "openrouter/minimax/minimax-m3"
+# Step 2: structured JSON synthesis — Hermes 3 (NousResearch, built for JSON/tool-use)
+STEP2_MODEL    = "ollama/hermes3"
+STEP2_FALLBACK = "huggingface/NousResearch/Hermes-3-Llama-3.1-8B"
 
 
 class SignalAnalysisReport(BaseModel):
@@ -189,8 +191,8 @@ class SignalAnalyst:
             agent_name=f"{self.name}:step1",
             system=deepseek_system,
             user=deepseek_user,
-            model=MISTRAL_MODEL,
-            fallback_model=DEEPSEEK_FALLBACK,
+            model=STEP1_MODEL,
+            fallback_model=STEP1_FALLBACK,
             temperature=0.1,
             max_tokens=1000,
         )
@@ -213,8 +215,8 @@ class SignalAnalyst:
             system=minimax_system,
             user=minimax_user,
             schema=SignalAnalysisReport,
-            model=MISTRAL_MODEL,
-            fallback_model=MINIMAX_FALLBACK,
+            model=STEP2_MODEL,
+            fallback_model=STEP2_FALLBACK,
             temperature=0.1,
             max_tokens=1500,
         )

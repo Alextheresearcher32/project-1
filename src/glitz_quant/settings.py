@@ -40,6 +40,8 @@ class LLMProvider(str, Enum):
     GROQ = "groq"
     XAI = "xai"
     OPENROUTER = "openrouter"
+    HUGGINGFACE = "huggingface"
+    OLLAMA = "ollama"
 
 
 # -------- Env-backed settings --------
@@ -73,8 +75,10 @@ class Settings(BaseSettings):
     groq_api_key: SecretStr | None = None
     xai_api_key: SecretStr | None = None
     openrouter_api_key: SecretStr | None = None
-    llm_primary: LLMProvider = LLMProvider.ANTHROPIC
-    llm_fallback: LLMProvider = LLMProvider.OPENROUTER
+    huggingface_api_key: SecretStr | None = None
+    ollama_base_url: str = "http://localhost:11434"
+    llm_primary: LLMProvider = LLMProvider.OLLAMA
+    llm_fallback: LLMProvider = LLMProvider.HUGGINGFACE
 
     # Market data
     coingecko_api_key: SecretStr | None = None
