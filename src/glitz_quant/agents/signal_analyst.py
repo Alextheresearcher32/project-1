@@ -40,8 +40,8 @@ STEP2_FALLBACK = "huggingface/meta-llama/Meta-Llama-3-8B-Instruct"
 
 class SignalAnalysisReport(BaseModel):
     overall_assessment: str = Field(description="1-2 sentence summary of signal quality")
-    win_rate_pct: float = Field(description="Estimated win rate across completed round-trips, 0-100")
-    confidence_calibrated: bool = Field(description="True if high-confidence signals outperform low-confidence ones")
+    win_rate_pct: float = Field(default=0.0, description="Estimated win rate across completed round-trips, 0-100")
+    confidence_calibrated: bool = Field(default=False, description="True if high-confidence signals outperform low-confidence ones")
     best_conditions: list[str] = Field(max_length=5, description="Conditions that reliably preceded wins")
     worst_conditions: list[str] = Field(max_length=5, description="Conditions that reliably preceded losses")
     recommendations: list[str] = Field(max_length=4, description="Concrete parameter or rule changes to consider")
