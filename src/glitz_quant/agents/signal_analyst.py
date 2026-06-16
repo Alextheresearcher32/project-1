@@ -31,11 +31,11 @@ log = get_logger(__name__)
 
 # Step 1: pattern extraction — Mistral (fast, open-ended prose)
 STEP1_MODEL    = "ollama/mistral"
-STEP1_FALLBACK = "huggingface/mistralai/Mistral-7B-Instruct-v0.3"
+STEP1_FALLBACK = "huggingface/meta-llama/Meta-Llama-3-8B-Instruct"
 
 # Step 2: structured JSON synthesis — Hermes 3 (NousResearch, built for JSON/tool-use)
 STEP2_MODEL    = "ollama/hermes3"
-STEP2_FALLBACK = "huggingface/NousResearch/Hermes-3-Llama-3.1-8B"
+STEP2_FALLBACK = "huggingface/meta-llama/Meta-Llama-3-8B-Instruct"
 
 
 class SignalAnalysisReport(BaseModel):

@@ -30,7 +30,7 @@ T = TypeVar("T", bound=BaseModel)
 # Provider-specific model defaults. Override in code or settings.yaml.
 DEFAULT_MODELS = {
     LLMProvider.OLLAMA:       "ollama/hermes3",
-    LLMProvider.HUGGINGFACE:  "huggingface/NousResearch/Hermes-3-Llama-3.1-8B",
+    LLMProvider.HUGGINGFACE:  "huggingface/meta-llama/Meta-Llama-3-8B-Instruct",
     LLMProvider.ANTHROPIC:    "anthropic/claude-haiku-4-5-20251001",
     LLMProvider.OPENROUTER:   "openrouter/deepseek/deepseek-chat",
     LLMProvider.GOOGLE:       "gemini/gemini-2.0-flash",
