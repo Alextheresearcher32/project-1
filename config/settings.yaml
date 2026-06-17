@@ -47,6 +47,10 @@ agents:
     model: claude-haiku-4-5            # cheap, only used for order placement style hints
     temperature: 0.1
     max_tokens: 500
+  chairman:
+    model: claude-haiku-4-5-20251001   # fast/cheap — go/no-go only, no deep reasoning needed
+    temperature: 0.1
+    max_tokens: 800
 
 # -------- RAG --------
 rag:

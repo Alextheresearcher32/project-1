@@ -338,6 +338,9 @@ class Runner:
         else:
             log.warning("boardroom_pipeline_disabled", reason="no LLM key or disabled in config")
 
+        # Recover open positions from Supabase so OMS is not blind after a crash
+        await self.oms.recover_positions()
+
         await alerts.broadcast("info", f"glitz-quant starting in {s.glitz_mode.value} mode")
 
         strategy_cfg = get_strategies_config().get("strategies", {})

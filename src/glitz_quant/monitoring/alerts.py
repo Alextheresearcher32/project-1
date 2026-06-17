@@ -1,6 +1,9 @@
-"""Alert routing — Telegram, Discord. Used for circuit breakers, kill events."""
+"""Alert routing — Telegram, Discord, Email. Used for circuit breakers, kill events."""
 
 from __future__ import annotations
+
+import smtplib
+from email.mime.text import MIMEText
 
 import httpx
 
@@ -43,8 +46,43 @@ async def send_discord(message: str) -> bool:
             return False
 
 
+def send_email(subject: str, body: str) -> bool:
+    """Synchronous SMTP send. Called from async context via asyncio.to_thread."""
+    s = get_settings()
+    if not all([s.smtp_host, s.smtp_user, s.smtp_password, s.alert_from_email, s.alert_to_email]):
+        return False
+    try:
+        msg = MIMEText(body, "plain")
+        msg["Subject"] = subject
+        msg["From"] = s.alert_from_email
+        msg["To"] = s.alert_to_email
+        with smtplib.SMTP(s.smtp_host, s.smtp_port, timeout=10) as smtp:
+            smtp.starttls()
+            smtp.login(s.smtp_user, s.smtp_password.get_secret_value())
+            smtp.sendmail(s.alert_from_email, [s.alert_to_email], msg.as_string())
+        return True
+    except Exception as e:
+        log.warning("email_send_failed", err=str(e))
+        return False
+
+
 async def broadcast(level: str, message: str) -> None:
-    """Route by level to configured channels."""
+    """Route by level to configured channels per settings.yaml alert_levels."""
+    import asyncio
+
+    from glitz_quant.settings import get_app_config
+
+    alert_levels: dict = get_app_config().get("monitoring", {}).get("alert_levels", {})
+    channels = alert_levels.get(level, ["telegram"])
+    if isinstance(channels, str):
+        channels = [channels]
+
     text = f"[{level.upper()}] {message}"
-    await send_telegram(text)
-    await send_discord(text)
+
+    if "telegram" in channels:
+        await send_telegram(text)
+    if "discord" in channels:
+        await send_discord(text)
+    if "email" in channels:
+        subject = f"glitz-quant [{level.upper()}] alert"
+        await asyncio.to_thread(send_email, subject, text)
