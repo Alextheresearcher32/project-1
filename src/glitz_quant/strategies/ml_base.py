@@ -126,9 +126,12 @@ class MLStrategy(Strategy):
         if self._long_model is None and self._short_model is None:
             return None
 
-        # Feature matrix — last row is current bar
-        X = self._fe.transform(ctx.candles)
-        x_last = X[-1]
+        # Feature vector — use precomputed row if backtester provided it (O(1)), else compute
+        if ctx.precomputed_x is not None:
+            x_last = ctx.precomputed_x
+        else:
+            X = self._fe.transform(ctx.candles)
+            x_last = X[-1]
 
         # Regime filter
         atr_pct = float(x_last[self._fe.feature_names().index("atr_pct")])

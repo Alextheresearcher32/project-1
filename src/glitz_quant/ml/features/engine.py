@@ -7,13 +7,15 @@ its input vector. All features are stationary (returns, ratios, z-scores)
 so they generalize across different price regimes.
 
 Feature groups:
-  returns    : log-returns at 1/3/6/12/24/48 bar horizons
+  returns    : log-returns at 1/3/6/12/24/48/96 bar horizons
   momentum   : RSI, EMA-cross, ROC at multiple periods
-  volatility : ATR/price ratio, Bollinger width, realized vol
+  volatility : ATR/price ratio, Bollinger width, realized vol, vol rank
   volume     : volume z-score, volume momentum, OBV change
-  structure  : proximity to support/resistance, range position
-  regime     : ATR regime, trend strength (ADX proxy)
-  candle     : bounce_candle, shooting_star (boolean → 0/1)
+  structure  : proximity to support/resistance, range position, VWAP deviation
+  regime     : ATR regime, trend strength (ADX proxy), hurst proxy
+  htf        : 1h and 4h synthetic trend features (aggregated from 15m bars)
+  time       : hour-of-day and day-of-week cyclical encodings (sin/cos)
+  candle     : bounce_candle, shooting_star, body_ratio, wick_imbalance
 """
 
 from __future__ import annotations
@@ -38,15 +40,18 @@ class FeatureEngine:
         feature_names = fe.feature_names()
     """
 
-    # Horizons (in bars) for return and momentum features
-    RETURN_HORIZONS = [1, 3, 6, 12, 24, 48]
+    # Horizons (in 15m bars) for return and momentum features
+    RETURN_HORIZONS = [1, 3, 6, 12, 24, 48, 96]   # up to 24h
     RSI_PERIODS = [7, 14, 21]
     EMA_SPANS = [8, 21, 55, 200]
     VOL_LOOKBACKS = [6, 12, 24]
+    # Bars per higher timeframe (on 15m data: 4=1h, 16=4h, 96=1d)
+    HTF_BARS = {"1h": 4, "4h": 16, "1d": 96}
 
     def transform(self, df: pd.DataFrame) -> np.ndarray:
         """
         df: OHLCV DataFrame with columns [open, high, low, close, volume].
+            Index should be DatetimeTzAware (UTC) for time features to work.
         Returns: float32 array of shape (len(df), n_features).
                  Rows with NaN (warmup period) are forward-filled then zero-filled.
         """
@@ -90,6 +95,14 @@ class FeatureEngine:
         feats["bb_width"] = (2 * bb_std) / (bb_mean + _EPS)
         feats["bb_pos"] = (c - (bb_mean - 2 * bb_std)) / (4 * bb_std + _EPS)  # 0=lower,1=upper
 
+        # Realized vol rank: where is current vol vs past 30 days (192 bars on 15m)?
+        rvol_14 = c.pct_change().rolling(14).std()
+        feats["vol_rank"] = rvol_14.rolling(192).rank(pct=True)
+
+        # ATR compression: low ATR regime often precedes breakout
+        atr_rank = atr_ser.rolling(192).rank(pct=True)
+        feats["atr_rank"] = atr_rank
+
         # ── Volume ────────────────────────────────────────────────────────────
         vol_mean = v.rolling(20).mean()
         vol_std = v.rolling(20).std()
@@ -99,6 +112,9 @@ class FeatureEngine:
         # OBV change (volume-weighted direction)
         obv = (np.sign(c.diff()) * v).cumsum()
         feats["obv_ret_12"] = (obv - obv.shift(12)) / (v.rolling(12).sum() + _EPS)
+
+        # Volume trend (is volume growing or shrinking vs 20-bar average?)
+        feats["vol_trend"] = (v.rolling(5).mean() - v.rolling(20).mean()) / (v.rolling(20).mean() + _EPS)
 
         # ── Price structure ───────────────────────────────────────────────────
         sup = l.rolling(48).min()
@@ -110,6 +126,22 @@ class FeatureEngine:
 
         # High-low range of last bar vs ATR
         feats["bar_range_atr"] = (h - l) / (atr_ser + _EPS)
+
+        # VWAP deviation (proxy: typical price vs rolling VWAP over session ~96 bars = 1 day)
+        typical = (h + l + c) / 3
+        vwap = (typical * v).rolling(96).sum() / (v.rolling(96).sum() + _EPS)
+        feats["vwap_dev"] = (c - vwap) / (vwap + _EPS)
+
+        # ── Higher timeframe synthetic features ───────────────────────────────
+        for tf_name, bars in self.HTF_BARS.items():
+            # Aggregate close by rolling window — approximate HTF close
+            htf_close = c.rolling(bars).mean()       # smoothed HTF close
+            htf_ret = htf_close / htf_close.shift(bars) - 1
+            feats[f"htf_{tf_name}_ret"] = htf_ret
+
+            htf_ema_fast = htf_close.ewm(span=8, adjust=False).mean()
+            htf_ema_slow = htf_close.ewm(span=21, adjust=False).mean()
+            feats[f"htf_{tf_name}_trend"] = (htf_ema_fast - htf_ema_slow) / (htf_ema_slow + _EPS)
 
         # ── Regime ────────────────────────────────────────────────────────────
         # ADX proxy: directional movement
@@ -127,6 +159,27 @@ class FeatureEngine:
         var1 = ret1.rolling(32).var()
         var4 = ret4.rolling(32).var()
         feats["hurst_proxy"] = np.log(var4 / (4 * var1 + _EPS) + _EPS) / np.log(4)
+
+        # ── Time-of-day / day-of-week (cyclical encoding) ────────────────────
+        # Crypto has strong intraday seasonality: US open volatility, Asian
+        # accumulation, weekend patterns. Sin/cos encoding keeps the circular
+        # nature of time (23:00 is close to 00:00, not far away).
+        idx = df.index
+        if hasattr(idx, "hour"):
+            hour = pd.Series(idx.hour, index=df.index, dtype=float)
+            dow = pd.Series(idx.dayofweek, index=df.index, dtype=float)
+        else:
+            try:
+                hour = pd.Series(idx.to_series().dt.hour.values, index=df.index, dtype=float)
+                dow = pd.Series(idx.to_series().dt.dayofweek.values, index=df.index, dtype=float)
+            except Exception:
+                hour = pd.Series(0.0, index=df.index)
+                dow = pd.Series(0.0, index=df.index)
+
+        feats["hour_sin"] = np.sin(2 * np.pi * hour / 24)
+        feats["hour_cos"] = np.cos(2 * np.pi * hour / 24)
+        feats["dow_sin"]  = np.sin(2 * np.pi * dow / 7)
+        feats["dow_cos"]  = np.cos(2 * np.pi * dow / 7)
 
         # ── Candle patterns (boolean → 0/1) ──────────────────────────────────
         body = (c - o).abs()
@@ -171,9 +224,15 @@ class FeatureEngine:
             "dist_ema200", "atr_pct",
             *[f"rvol_{lb}" for lb in self.VOL_LOOKBACKS],
             "bb_width", "bb_pos",
-            "vol_z", "vol_momentum", "obv_ret_12",
-            "range_pos", "prox_sup", "prox_res", "bar_range_atr",
+            "vol_rank", "atr_rank",
+            "vol_z", "vol_momentum", "obv_ret_12", "vol_trend",
+            "range_pos", "prox_sup", "prox_res", "bar_range_atr", "vwap_dev",
+        ]
+        for tf_name in self.HTF_BARS:
+            names += [f"htf_{tf_name}_ret", f"htf_{tf_name}_trend"]
+        names += [
             "adx_proxy", "hurst_proxy",
+            "hour_sin", "hour_cos", "dow_sin", "dow_cos",
             "bounce_candle", "shooting_star", "body_ratio", "wick_imbalance",
         ]
         return names

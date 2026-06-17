@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from glitz_quant.data.types import Signal
@@ -23,6 +24,7 @@ class StrategyContext:
     cash_usd: float
     recent_signals: list[Signal]             # last few signals from this strategy
     extra_data: dict[str, Any] = field(default_factory=dict)  # venue-specific extras, e.g. funding_rate_8h
+    precomputed_x: np.ndarray | None = None  # pre-computed feature row (backtester optimization)
 
 
 class Strategy(ABC):

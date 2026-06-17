@@ -50,11 +50,32 @@ from glitz_quant.strategies.ml_meme_coin import MLMemeCoinStrategy
 from glitz_quant.strategies.ml_funding_carry import MLFundingCarryStrategy
 
 MODEL_DIR = Path(__file__).parent / "data" / "models"
-TRAIN_START = "2024-01-01T00:00:00Z"
-TRAIN_END = "2026-06-13T00:00:00Z"  # updated to include recent data
+TRAIN_START = "2022-01-01T00:00:00Z"   # include 2022 bear + 2023 recovery for regime diversity
+TRAIN_END = "2026-06-17T00:00:00Z"
 VAL_SPLIT = 0.2   # last 20% of data for validation + calibration
 WF_TRAIN_DAYS = 60
 WF_TEST_DAYS = 14
+
+# Tuned LightGBM params — more trees + lower LR to avoid overfitting on noisy labels
+LGBM_PARAMS = {
+    "objective": "binary",
+    "metric": "auc",
+    "boosting_type": "gbdt",
+    "num_leaves": 63,
+    "max_depth": 7,
+    "learning_rate": 0.02,
+    "n_estimators": 1500,
+    "min_child_samples": 50,
+    "subsample": 0.75,
+    "subsample_freq": 1,
+    "colsample_bytree": 0.7,
+    "reg_alpha": 0.2,
+    "reg_lambda": 0.5,
+    "class_weight": "balanced",
+    "random_state": 42,
+    "n_jobs": -1,
+    "verbose": -1,
+}
 
 
 def sep(c="═", w=64):
@@ -178,31 +199,36 @@ def run_momentum(df: pd.DataFrame) -> None:
     y_long_tr, y_long_val = y_long_clean[:split], y_long_clean[split:]
     y_short_tr, y_short_val = y_short_clean[:split], y_short_clean[split:]
 
-    long_model = train_model("momentum_long", X_tr, y_long_tr, X_val, y_long_val, feat_names)
-    short_model = train_model("momentum_short", X_tr, y_short_tr, X_val, y_short_val, feat_names)
+    long_model = train_model("momentum_long", X_tr, y_long_tr, X_val, y_long_val, feat_names, params=LGBM_PARAMS)
+    short_model = train_model("momentum_short", X_tr, y_short_tr, X_val, y_short_val, feat_names, params=LGBM_PARAMS)
 
-    # Save immediately — walk-forward runs separately via --validate flag
-    long_model.sharpe = 0.1   # placeholder; updated by --validate run
-    short_model.sharpe = 0.1
     out = MODEL_DIR / "ml_momentum"
     out.mkdir(parents=True, exist_ok=True)
+
+    # Save immediately with placeholder Sharpe so models survive a kill/interrupt.
+    # Walk-forward below will update .sharpe and resave.
+    long_model.sharpe = 0.3
+    short_model.sharpe = 0.3
     long_model.save(out / "long.pkl")
     short_model.save(out / "short.pkl")
-    print(f"\n  Saved → {out}/")
+    print(f"\n  Saved (pre-WF) → {out}/")
 
-    if args.validate:
-        params = {
-            "symbol": "BTC-USD",
-            "target_notional_usd": 500,
-            "min_confidence": 0.55,
-            "atr_regime_pct": 0.005,
-            "tp_atr_mult": 2.0,
-            "sl_atr_mult": 1.0,
-        }
-        long_model.sharpe = validate_with_backtest(long_model, MLMomentumStrategy, params, df)
-        short_model.sharpe = max(long_model.sharpe, 0.1)
-        long_model.save(out / "long.pkl")
-        short_model.save(out / "short.pkl")
+    strat_params = {
+        "symbol": "BTC-USD",
+        "target_notional_usd": 500,
+        "min_confidence": 0.33,
+        "atr_regime_pct": 0.005,
+        "tp_atr_mult": 2.0,
+        "sl_atr_mult": 1.0,
+        "max_hold_bars": 32,
+        "bidirectional": True,
+    }
+    long_model.sharpe = validate_with_backtest(long_model, MLMomentumStrategy, strat_params, df)
+    short_model.sharpe = max(long_model.sharpe, 0.1)
+
+    long_model.save(out / "long.pkl")
+    short_model.save(out / "short.pkl")
+    print(f"\n  Saved (post-WF) → {out}/")
 
 
 def run_meme_coin(df: pd.DataFrame) -> None:

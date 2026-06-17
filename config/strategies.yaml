@@ -87,8 +87,27 @@ strategies:
   # Train with: python train_ml_strategies.py --strategy momentum
   # Models saved to: data/models/ml_momentum/long.pkl + short.pkl
 
-  ml_momentum:
+  btc_trend:
     enabled: true
+    module: glitz_quant.strategies.btc_trend
+    class: BtcTrendFollow
+    venues: [coinbase, kraken, paper]
+    symbols: [BTC-USD]
+    timeframe: 15m
+    params:
+      symbol: BTC-USD
+      target_notional_usd: 500
+      tp_atr_mult: 3.0
+      sl_atr_mult: 1.0
+      max_hold_bars: 96
+      atr_regime_min: 0.003
+      cooldown_bars: 16
+      bidirectional: true
+      rsi_long_min: 50.0
+      rsi_short_max: 50.0
+
+  ml_momentum:
+    enabled: false
     module: glitz_quant.strategies.ml_momentum
     class: MLMomentumStrategy
     venues: [coinbase, kraken, paper]
@@ -97,7 +116,7 @@ strategies:
     params:
       symbol: BTC-USD
       target_notional_usd: 500
-      min_confidence: 0.33          # paper mode — model AUC ~0.51, signals near 0.33
+      min_confidence: 0.02          # TEMP: pipeline validation only — Sharpe-calibrated conf caps ~0.04, model has no edge (AUC ~0.51)
       atr_regime_pct: 0.005         # skip entries when ATR/price > 0.5%
       tp_atr_mult: 2.0              # TP at 2× ATR (2:1 R:R)
       sl_atr_mult: 1.0              # SL at 1× ATR

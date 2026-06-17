@@ -50,17 +50,25 @@ class Backtester:
         trades_log: list[dict[str, Any]] = []
         equity: list[tuple[datetime, float]] = []
 
-        # warmup
+        # Pre-compute all features once for ML strategies to avoid O(n²) per-bar recomputation.
+        # The feature vector for bar i is passed via ctx.precomputed_x so on_candle() skips
+        # the expensive fe.transform(full_candles) call and does an O(1) array index instead.
+        X_precomputed = None
+        if hasattr(strategy, "_fe"):
+            X_precomputed = strategy._fe.transform(candles)
+
         warmup = 200
+        _ctx_bars = 250
         for i in range(warmup, len(candles)):
-            window = candles.iloc[: i + 1]
-            close_price = Decimal(str(window["close"].iloc[-1]))
+            window = candles.iloc[max(0, i - _ctx_bars + 1) : i + 1]
+            close_price = Decimal(str(candles["close"].iloc[i]))
             ctx = StrategyContext(
                 candles=window,
                 open_position_size=float(position_size),
                 open_position_avg_price=float(position_avg_price),
                 cash_usd=float(cash),
                 recent_signals=recent_signals[-10:],
+                precomputed_x=X_precomputed[i] if X_precomputed is not None else None,
             )
             sig = strategy.on_candle(ctx)
             if sig is not None:
@@ -73,7 +81,7 @@ class Backtester:
                     position_size = trade_info["size"]
                     position_avg_price = trade_info["avg"]
                     trades_log.append({
-                        "ts": window.index[-1],
+                        "ts": candles.index[i],
                         "side": trade_info["side"],
                         "price": float(trade_info["fill_price"]),
                         "size": float(trade_info["fill_size"]),
@@ -83,7 +91,7 @@ class Backtester:
                     })
 
             mtm = cash + position_size * close_price
-            equity.append((window.index[-1], float(mtm)))
+            equity.append((candles.index[i], float(mtm)))
 
         eq = pd.Series({ts: v for ts, v in equity})
         trades_df = pd.DataFrame(trades_log)
