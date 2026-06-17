@@ -15,6 +15,8 @@ from decimal import Decimal
 from typing import cast
 from uuid import uuid4
 
+import httpx
+
 from glitz_quant.data.store.redis_cache import RedisCache
 from glitz_quant.data.types import (
     Fill,
@@ -56,19 +58,23 @@ class PaperAdapter(ExchangeAdapter):
 
     async def submit_order(self, order: Order) -> Order:
         ticker = await self.cache.get_ticker(self._reference_venue, order.symbol)
-        if ticker is None:
-            order.status = OrderStatus.REJECTED
-            order.rejected_reason = f"no reference ticker for {order.symbol}"
-            order.updated_at = datetime.now(timezone.utc)
-            return order
+        if ticker is not None:
+            bid, ask = ticker.bid, ticker.ask
+        else:
+            prices = await self._fetch_spot_price(order.symbol)
+            if prices is None:
+                order.status = OrderStatus.REJECTED
+                order.rejected_reason = f"no reference price available for {order.symbol}"
+                order.updated_at = datetime.now(timezone.utc)
+                return order
+            bid, ask = prices
 
         order.venue_order_id = f"paper-{uuid4().hex[:12]}"
         order.status = OrderStatus.SUBMITTED
         order.updated_at = datetime.now(timezone.utc)
         self._open[order.client_order_id] = order
 
-        # immediately try to fill
-        await self._try_fill(order, ticker.bid, ticker.ask)
+        await self._try_fill(order, bid, ask)
         return order
 
     async def cancel_order(self, order: Order) -> bool:
@@ -93,12 +99,17 @@ class PaperAdapter(ExchangeAdapter):
 
     async def poll_order(self, order: Order) -> Order:
         ticker = await self.cache.get_ticker(self._reference_venue, order.symbol)
-        if ticker is None:
-            return order
+        if ticker is not None:
+            bid, ask = ticker.bid, ticker.ask
+        else:
+            prices = await self._fetch_spot_price(order.symbol)
+            if prices is None:
+                return order
+            bid, ask = prices
         existing = self._open.get(order.client_order_id)
         if existing is None or existing.status in (OrderStatus.FILLED, OrderStatus.CANCELLED):
             return order
-        await self._try_fill(existing, ticker.bid, ticker.ask)
+        await self._try_fill(existing, bid, ask)
         return existing
 
     async def poll_fills(self, order: Order) -> list[Fill]:
@@ -112,6 +123,22 @@ class PaperAdapter(ExchangeAdapter):
         return self._starting_cash + self._cumulative_pnl
 
     # -------- Internal --------
+    async def _fetch_spot_price(self, symbol: str) -> tuple[Decimal, Decimal] | None:
+        """Fetch mid price from Coinbase public API and synthesise bid/ask (1 bp spread each side).
+        Used as fallback when Redis is unavailable."""
+        cb_symbol = symbol.replace("/", "-")
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(f"https://api.coinbase.com/v2/prices/{cb_symbol}/spot")
+                r.raise_for_status()
+                mid = Decimal(r.json()["data"]["amount"])
+            half = mid * Decimal("0.0001")
+            log.debug("coinbase_spot_fallback", symbol=symbol, mid=str(mid))
+            return mid - half, mid + half
+        except Exception as exc:
+            log.warning("coinbase_spot_fallback_failed", symbol=symbol, reason=str(exc)[:120])
+            return None
+
     async def _try_fill(self, order: Order, bid: Decimal, ask: Decimal) -> Fill | None:
         if order.status not in (OrderStatus.SUBMITTED, OrderStatus.PARTIAL):
             return None

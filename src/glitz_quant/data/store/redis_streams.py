@@ -44,24 +44,31 @@ class RedisStreams:
 
     def __init__(self) -> None:
         self._client: redis.Redis | None = None
+        self._available: bool = False
 
     async def connect(self) -> None:
         url = get_settings().redis_url
-        self._client = redis.from_url(
-            url,
-            decode_responses=False,
-            socket_keepalive=True,
-            health_check_interval=30,
-        )
-        await self._client.ping()
-        # Create consumer group idempotently; mkstream=True creates the stream key
         try:
-            await self._client.xgroup_create(
-                MARKET_STREAM, _GROUP, id=b"$", mkstream=True
+            self._client = redis.from_url(
+                url,
+                decode_responses=False,
+                socket_keepalive=True,
+                health_check_interval=30,
             )
-        except Exception:
-            pass  # BUSYGROUP — group already exists
-        log.info("redis_streams_connected", stream=MARKET_STREAM.decode())
+            await self._client.ping()
+            # Create consumer group idempotently; mkstream=True creates the stream key
+            try:
+                await self._client.xgroup_create(
+                    MARKET_STREAM, _GROUP, id=b"$", mkstream=True
+                )
+            except Exception:
+                pass  # BUSYGROUP — group already exists
+            self._available = True
+            log.info("redis_streams_connected", stream=MARKET_STREAM.decode())
+        except Exception as e:
+            self._available = False
+            log.warning("redis_streams_unavailable", reason=str(e)[:120])
+            log.warning("redis_streams_degraded_mode", msg="market stream disabled — strategies will run on polled candles only")
 
     async def close(self) -> None:
         if self._client:
@@ -70,20 +77,25 @@ class RedisStreams:
 
     @property
     def _r(self) -> redis.Redis:
-        if self._client is None:
-            raise RuntimeError("RedisStreams not connected — call .connect() first")
+        if self._client is None or not self._available:
+            raise RuntimeError("RedisStreams not connected")
         return self._client
 
     # ---- Write side (connectors call these) ----
 
     async def push(self, event_type: str, data: dict) -> None:
+        if not self._available:
+            return
         payload = msgpack.packb(data, default=_mp_default, use_bin_type=True)
-        await self._r.xadd(
-            MARKET_STREAM,
-            {b"t": event_type.encode(), b"d": payload},
-            maxlen=_MAX_LEN,
-            approximate=True,
-        )
+        try:
+            await self._r.xadd(
+                MARKET_STREAM,
+                {b"t": event_type.encode(), b"d": payload},
+                maxlen=_MAX_LEN,
+                approximate=True,
+            )
+        except Exception:
+            pass
 
     async def push_ticker(self, ticker_dict: dict) -> None:
         await self.push("ticker", ticker_dict)
@@ -99,13 +111,18 @@ class RedisStreams:
         Returns [(msg_id, event_type, data_dict), ...].
         Call ack() after processing to advance the group offset.
         """
-        result = await self._r.xreadgroup(
-            _GROUP,
-            consumer.encode(),
-            {MARKET_STREAM: b">"},
-            count=count,
-            block=500,
-        )
+        if not self._available:
+            return []
+        try:
+            result = await self._r.xreadgroup(
+                _GROUP,
+                consumer.encode(),
+                {MARKET_STREAM: b">"},
+                count=count,
+                block=500,
+            )
+        except Exception:
+            return []
         if not result:
             return []
         out: list[tuple[bytes, str, dict]] = []
@@ -118,8 +135,17 @@ class RedisStreams:
         return out
 
     async def ack(self, *msg_ids: bytes) -> None:
-        if msg_ids:
+        if not self._available or not msg_ids:
+            return
+        try:
             await self._r.xack(MARKET_STREAM, _GROUP, *msg_ids)
+        except Exception:
+            pass
 
     async def stream_len(self) -> int:
-        return await self._r.xlen(MARKET_STREAM)
+        if not self._available:
+            return 0
+        try:
+            return await self._r.xlen(MARKET_STREAM)
+        except Exception:
+            return 0

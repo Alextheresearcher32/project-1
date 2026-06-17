@@ -32,18 +32,25 @@ class RedisCache:
     def __init__(self) -> None:
         self.url = get_settings().redis_url
         self._client: redis.Redis | None = None
+        self._available: bool = False
         self._ttl = get_app_config().get("data", {}).get("cache_ttl_seconds", {})
 
     async def connect(self) -> None:
         if self._client is None:
-            self._client = redis.from_url(
-                self.url,
-                decode_responses=True,
-                socket_keepalive=True,
-                health_check_interval=30,
-            )
-            await self._client.ping()
-            log.info("redis_connected", url=self.url.split("@")[-1])
+            try:
+                self._client = redis.from_url(
+                    self.url,
+                    decode_responses=True,
+                    socket_keepalive=True,
+                    health_check_interval=30,
+                )
+                await self._client.ping()
+                self._available = True
+                log.info("redis_connected", url=self.url.split("@")[-1])
+            except Exception as e:
+                self._available = False
+                log.warning("redis_unavailable", reason=str(e)[:120])
+                log.warning("redis_degraded_mode", msg="ticker cache disabled — paper adapter will fetch prices directly")
 
     async def close(self) -> None:
         if self._client is not None:
@@ -52,21 +59,30 @@ class RedisCache:
 
     @property
     def client(self) -> redis.Redis:
-        if self._client is None:
+        if self._client is None or not self._available:
             raise RuntimeError("RedisCache not connected — call .connect() first")
         return self._client
 
     # -------- Tickers --------
     async def set_ticker(self, ticker: Ticker) -> None:
+        if not self._available:
+            return
         key = f"ticker:{ticker.venue.value}:{ticker.symbol}"
         ttl = int(self._ttl.get("ticker", 5))
-        await self.client.set(key, ticker.model_dump_json(), ex=ttl)
-        # also publish for live subscribers
-        await self.client.publish(f"ch:ticker:{ticker.symbol}", ticker.model_dump_json())
+        try:
+            await self._client.set(key, ticker.model_dump_json(), ex=ttl)
+            await self._client.publish(f"ch:ticker:{ticker.symbol}", ticker.model_dump_json())
+        except Exception:
+            pass
 
     async def get_ticker(self, venue: Venue, symbol: str) -> Ticker | None:
+        if not self._available:
+            return None
         key = f"ticker:{venue.value}:{symbol}"
-        raw = await self.client.get(key)
+        try:
+            raw = await self._client.get(key)
+        except Exception:
+            return None
         if not raw:
             return None
         return Ticker.model_validate_json(raw)
