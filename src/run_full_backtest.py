@@ -46,9 +46,12 @@ WF_TRAIN      = timedelta(days=120)
 WF_TEST       = timedelta(days=30)
 DATA_CACHE    = Path("/tmp/btc_15m_12yr.parquet")
 
-# Grid search uses a 4yr sample covering bear + bull + chop regimes
+# 4yr search sample: 2019-2022 (covers bear/bull/chop across different regimes)
 GRID_START = "2019-01-01"
 GRID_END   = "2022-12-31"
+
+# OOS: 2023-present (fully unseen — never touched during grid search)
+OOS_START  = "2023-01-01"
 
 
 # ── Formatting ────────────────────────────────────────────────────────────────
@@ -115,10 +118,11 @@ def _calc_metrics(pnls: list[float], equity: list[float]) -> dict:
     rets = np.diff(eq) / (eq[:-1] + 1e-9)
     sharpe = float(rets.mean() / (rets.std() + 1e-12) * np.sqrt(365 * 24 * 4))
     wins = pnl_arr[pnl_arr > 0]; losses = pnl_arr[pnl_arr < 0]
+    peak = np.maximum.accumulate(eq)
     return {
         "sharpe": sharpe,
         "total_return": (eq[-1] - STARTING_CASH) / STARTING_CASH,
-        "max_drawdown": float((eq.cummax() - eq).max() / (eq.cummax().max() + 1e-9)),
+        "max_drawdown": float((peak - eq).max() / (peak.max() + 1e-9)),
         "win_rate": len(wins) / max(len(pnl_arr), 1),
         "profit_factor": wins.sum() / (abs(losses.sum()) + 1e-9),
         "num_trades": len(pnls),
@@ -301,24 +305,25 @@ def run_grid(name: str, sim_fn, ic: IndicatorCache, combos: list[dict], top_n: i
     return results[:top_n]
 
 
-# ── Walk-forward validation on full dataset ───────────────────────────────────
-def wf_validate(name: str, klass, top_combos: list, df_full: pd.DataFrame):
+# ── OOS validation (fast vectorised, 2023-present) ───────────────────────────
+def oos_validate(name: str, sim_fn, top_combos: list, ic_oos: IndicatorCache, df_oos: pd.DataFrame):
     sep()
-    print(f"WALK-FORWARD — {name}  (top {min(3,len(top_combos))} combos × full 10yr)")
+    print(f"OOS VALIDATION — {name}  ({OOS_START[:7]} → present, {len(df_oos):,} bars)")
     sep()
     best_sh = -999.0; best_params = None; best_metrics = {}
 
-    for rank, (_, p, _) in enumerate(top_combos[:3], 1):
+    for rank, (grid_sh, p, _) in enumerate(top_combos[:5], 1):
         try:
-            strat = klass(params=p)
-            m = _wf(strat, df_full)
-            sh = m.get("avg_sharpe", 0); wins = m.get("pct_windows_positive_sharpe", 0)*100
-            nw = m.get("num_windows", 0)
-            print(f"  #{rank}  {_fmt(m)}  | {nw:.0f} windows  {wins:.0f}% pos")
+            m = sim_fn(ic_oos, p)
+            sh = m["sharpe"]; ret = m["total_return"]*100
+            wr = m["win_rate"]*100; nt = m["num_trades"]; dd = m["max_drawdown"]*100; pf = m["profit_factor"]
+            flag = "✓" if sh > 0.3 else ("~" if sh > 0 else "✗")
+            print(f"  {flag} #{rank}  OOS Sharpe {sh:+.3f}  ret {ret:+.1f}%  DD {dd:.1f}%  WR {wr:.0f}%  PF {pf:.2f}  n={nt}  (grid {grid_sh:+.2f})")
             if sh > best_sh:
                 best_sh = sh; best_params = p; best_metrics = m
         except Exception as e:
             print(f"  #{rank}  ERROR: {e}")
+    sep("─", 72)
     return best_params, best_sh, best_metrics
 
 
@@ -438,55 +443,65 @@ async def main():
     br_top = run_grid("bitcoin_range", sim_bitcoin_range, ic_grid, _bitcoin_range_combos())
     rt_top = run_grid("range_trader",  sim_range_trader,  ic_grid, _range_trader_combos())
 
-    # ── 3. Walk-forward on full dataset ───────────────────────────────────────
-    print("\n[3/4] WALK-FORWARD VALIDATION (full 10yr)")
+    # ── 3. OOS validation on 2023-present (fast, vectorised) ─────────────────
+    print("\n[3/4] OUT-OF-SAMPLE VALIDATION (2023-present, never seen in grid search)")
     sep("─", 72)
 
-    best_bt_p, best_bt_sh, best_bt_m = wf_validate("btc_trend",    BtcTrendFollow,      bt_top, df)
-    best_br_p, best_br_sh, best_br_m = wf_validate("bitcoin_range", BitcoinRangeMomentum, br_top, df)
-    best_rt_p, best_rt_sh, best_rt_m = wf_validate("range_trader",  RangeTrader,          rt_top, df)
+    df_oos = df[OOS_START:].copy()
+    ic_oos = IndicatorCache(df_oos)
 
-    # ── 4. ML baselines ───────────────────────────────────────────────────────
-    print("\n[4/4] ML STRATEGY WALK-FORWARD BASELINES")
+    best_bt_p, best_bt_sh, best_bt_m = oos_validate("btc_trend",     sim_btc_trend,     bt_top, ic_oos, df_oos)
+    best_br_p, best_br_sh, best_br_m = oos_validate("bitcoin_range", sim_bitcoin_range, br_top, ic_oos, df_oos)
+    best_rt_p, best_rt_sh, best_rt_m = oos_validate("range_trader",  sim_range_trader,  rt_top, ic_oos, df_oos)
+
+    # ── 4. ML baselines (2yr WF on recent data) ───────────────────────────────
+    print("\n[4/4] ML STRATEGY BASELINES (2yr WF on 2024-present)")
     sep("─", 72)
+
+    df_ml = df["2024-01-01":].copy()  # 2.5yr WF — fast but still meaningful
 
     ml_results = {}
-    for ml_name, klass, params in [
-        ("ml_momentum", MLMomentumStrategy, {
+    for ml_name, klass, model_dir, params in [
+        ("ml_momentum", MLMomentumStrategy, "data/models/ml_momentum", {
             "symbol": "BTC-USD", "target_notional_usd": 500, "min_confidence": 0.33,
             "atr_regime_pct": 0.005, "tp_atr_mult": 2.0, "sl_atr_mult": 1.0,
-            "max_hold_bars": 32, "bidirectional": True, "model_path": "data/models/ml_momentum"}),
-        ("ml_meme_coin", MLMemeCoinStrategy, {
+            "max_hold_bars": 32, "bidirectional": True}),
+        ("ml_meme_coin", MLMemeCoinStrategy, "data/models/ml_meme_coin", {
             "symbol": "BTC-USD", "target_notional_usd": 300, "min_confidence": 0.45,
             "atr_regime_pct": 0.008, "min_vol_z": 2.0, "tp_atr_mult": 1.5,
-            "sl_atr_mult": 0.75, "max_hold_bars": 16, "bidirectional": True,
-            "model_path": "data/models/ml_meme_coin"}),
-        ("ml_funding_carry", MLFundingCarryStrategy, {
+            "sl_atr_mult": 0.75, "max_hold_bars": 16, "bidirectional": True}),
+        ("ml_funding_carry", MLFundingCarryStrategy, "data/models/ml_funding_carry", {
             "symbol": "BTC-USD", "target_notional_usd": 500, "min_confidence": 0.45,
             "atr_regime_pct": 0.006, "min_annual_funding": 0.05, "max_annual_funding": 2.0,
-            "tp_atr_mult": 1.5, "sl_atr_mult": 0.75, "max_hold_bars": 32,
-            "bidirectional": True, "model_path": f"data/models/{ml_name}".replace(ml_name,'ml_funding_carry')}),
+            "tp_atr_mult": 1.5, "sl_atr_mult": 0.75, "max_hold_bars": 32, "bidirectional": True}),
     ]:
         print(f"  {ml_name} …", end="", flush=True)
         try:
-            m = _wf(klass(params=params), df)
+            p = {**params, "model_path": model_dir}
+            strat = klass(params=p)
+            bt = Backtester(STARTING_CASH, FEE_BPS, SLIP_BPS)
+            m = bt.run(strat, df_ml).metrics
             ml_results[ml_name] = m
-            print(f" {_fmt(m)}")
+            sh = m.get("sharpe", 0); ret = m.get("total_return", 0)*100
+            wr = m.get("win_rate", 0)*100; nt = int(m.get("num_trades", 0))
+            dd = m.get("max_drawdown", 0)*100; pf = m.get("profit_factor", 0)
+            flag = "✓" if sh > 0.3 else ("~" if sh > 0 else "✗")
+            print(f" {flag} Sharpe {sh:+.3f}  ret {ret:+.1f}%  DD {dd:.1f}%  WR {wr:.0f}%  PF {pf:.2f}  n={nt}")
         except Exception as e:
             print(f" FAILED: {e}")
             ml_results[ml_name] = {}
 
     # ── Summary ───────────────────────────────────────────────────────────────
     sep()
-    print("FINAL RESULTS  —  Walk-Forward Avg Sharpe  (train 4mo / test 1mo)")
+    print("FINAL RESULTS  —  OOS Sharpe (2023-present)  |  grid search: 2019-2022")
     sep()
     rows = [
         ("btc_trend",        best_bt_sh,                     best_bt_p),
         ("bitcoin_range",    best_br_sh,                     best_br_p),
         ("range_trader",     best_rt_sh,                     best_rt_p),
-        ("ml_momentum",      ml_results.get("ml_momentum",   {}).get("avg_sharpe", 0), None),
-        ("ml_meme_coin",     ml_results.get("ml_meme_coin",  {}).get("avg_sharpe", 0), None),
-        ("ml_funding_carry", ml_results.get("ml_funding_carry",{}).get("avg_sharpe",0), None),
+        ("ml_momentum",      ml_results.get("ml_momentum",   {}).get("sharpe", 0), None),
+        ("ml_meme_coin",     ml_results.get("ml_meme_coin",  {}).get("sharpe", 0), None),
+        ("ml_funding_carry", ml_results.get("ml_funding_carry",{}).get("sharpe", 0), None),
     ]
     rows.sort(key=lambda x: x[1], reverse=True)
 

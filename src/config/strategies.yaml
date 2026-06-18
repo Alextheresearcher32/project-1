@@ -9,7 +9,7 @@
 # ── Hard-coded strategies (no ML, always available) ──────────────────────────
 
 bitcoin_range:
-  enabled: false
+  enabled: true
   module: glitz_quant.strategies.bitcoin_range
   class: BitcoinRangeMomentum
   venues: [coinbase, kraken, paper]
@@ -19,21 +19,22 @@ bitcoin_range:
     support_lookback_bars: 48
     resistance_lookback_bars: 48
     rsi_period: 14
-    rsi_oversold: 42
-    rsi_overbought: 58
+    rsi_oversold: 35            # loosened from 42 — more oversold entries
+    rsi_overbought: 65          # loosened from 58 — more overbought entries
     rsi_must_turn_up: true
-    zone_proximity_pct: 1.5
+    zone_proximity_pct: 2.0    # widened from 1.5 — enter when within 2% of zone
     volume_z_threshold: 0.0
     atr_period: 14
     stop_atr_buffer: 1.0
     max_hold_bars: 32
     trend_ema_bars: 200
     require_bounce_candle: false
-    atr_regime_pct: 0.005
+    atr_regime_pct: 0.003      # loosened from 0.005 — allow more sessions
     target_notional_usd: 500
+    bidirectional: true
 
 range_trader:
-  enabled: false
+  enabled: true
   module: glitz_quant.strategies.range_trader
   class: RangeTrader
   venues: [coinbase, kraken, paper]
@@ -41,15 +42,16 @@ range_trader:
   timeframe: 15m
   params:
     support_lookback_bars: 48
-    rsi_long_threshold: 50
-    rsi_short_threshold: 50
+    rsi_long_threshold: 45      # loosened from 50 — more entries near support
+    rsi_short_threshold: 55     # loosened from 50 — more entries near resistance
     zone_proximity_pct: 2.0
-    volume_z_min: 0.5
+    volume_z_min: 0.0           # removed vol filter — too restrictive for paper mode
     stop_atr_buffer: 1.5
-    require_candle_pattern: true
+    require_candle_pattern: false  # disabled — too restrictive for paper mode
     trend_ema_bars: 0
-    atr_regime_pct: 0.005
+    atr_regime_pct: 0.003      # loosened from 0.005
     target_notional_usd: 500
+    bidirectional: true
 
 funding_rate_carry:
   enabled: false
@@ -61,6 +63,27 @@ funding_rate_carry:
   params:
     funding_threshold: 0.0001
     min_annual_funding_pct: 5.0
+    target_notional_usd: 500
+    bidirectional: true
+
+# OOS Sharpe -4.518 — EMA crossover fails on BTC 15m noise. Disabled.
+btc_trend:
+  enabled: false
+  module: glitz_quant.strategies.btc_trend
+  class: BtcTrendFollow
+  venues: [coinbase, kraken, paper]
+  symbols: [BTC-USD]
+  timeframe: 15m
+  params:
+    ema_fast: 8
+    ema_slow: 21
+    ema_trend: 55
+    tp_atr_mult: 3.0
+    sl_atr_mult: 1.0
+    max_hold_bars: 96
+    atr_regime_min: 0.003
+    cooldown_bars: 16
+    bidirectional: true
     target_notional_usd: 500
 
 # ── ML strategies (require trained models) ───────────────────────────────────
@@ -78,7 +101,7 @@ ml_momentum:
     symbol: BTC-USD
     target_notional_usd: 500
     min_confidence: 0.40        # lowered for paper mode visibility — retrain will push this back to 0.55
-    atr_regime_pct: 0.005       # skip entries when ATR/price > 0.5%
+    atr_regime_pct: 0.015       # raised from 0.005 — was blocking nearly all BTC 15m bars
     tp_atr_mult: 2.0            # TP at 2× ATR above entry
     sl_atr_mult: 1.0            # SL at 1× ATR below entry (2:1 R:R)
     max_hold_bars: 32           # 8 hours on 15m
